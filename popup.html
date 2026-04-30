@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { 
+      width: 300px; 
+      padding: 15px; 
+      font-family: sans-serif; 
+    }
+    
+    h3 { 
+      margin: 0 0 15px 0; 
+      text-align: center; 
+      color: #333;
+    }
+    
+    .controls {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    
+    button { 
+      flex: 1;
+      padding: 10px; 
+      cursor: pointer; 
+      border: none; 
+      border-radius: 4px;
+      font-size: 14px;
+      font-weight: 500;
+      transition: all 0.3s;
+    }
+    
+    button:disabled { 
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+    
+    #startBtn { 
+      background-color: #4285f4; 
+      color: white; 
+    }
+    
+    #startBtn:hover:not(:disabled) {
+      background-color: #357ae8;
+    }
+    
+    #stopBtn { 
+      background-color: #ea4335; 
+      color: white; 
+    }
+    
+    #stopBtn:hover:not(:disabled) {
+      background-color: #d33828;
+    }
+    
+    #downloadBtn {
+      background-color: #34a853;
+      color: white;
+      width: 100%;
+      margin-bottom: 5px;
+    }
+    
+    #downloadBtn:hover:not(:disabled) {
+      background-color: #2d8e47;
+    }
+    
+    #playBtn {
+      background-color: #fbbc04;
+      color: #333;
+      width: 100%;
+      margin-bottom: 5px;
+    }
+    
+    #playBtn:hover:not(:disabled) {
+      background-color: #f9ab00;
+    }
+    
+    .status { 
+      margin-top: 10px; 
+      padding: 10px;
+      font-size: 12px; 
+      color: #666; 
+      text-align: center;
+      background: #f5f5f5;
+      border-radius: 4px;
+    }
+    
+    .recording { 
+      color: #ea4335; 
+      font-weight: bold; 
+      animation: pulse 1.5s infinite;
+    }
+    
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+    
+    .stats {
+      margin-top: 10px;
+      padding: 10px;
+      background: #e8f0fe;
+      border-radius: 4px;
+      font-size: 11px;
+      display: none;
+    }
+    
+    .stats.active {
+      display: block;
+    }
+    
+    .stat-row {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 5px;
+    }
+    
+    .stat-label {
+      color: #5f6368;
+      font-weight: 500;
+    }
+    
+    .stat-value {
+      color: #1a73e8;
+      font-weight: 600;
+    }
+    
+    #audioPlayer {
+      width: 100%;
+      margin-top: 10px;
+      display: none;
+    }
+    
+    #audioPlayer.active {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <h3>Sales AI Listener</h3>
+  
+  <div class="controls">
+    <button id="startBtn">Start Recording</button>
+    <button id="stopBtn" disabled>Stop Recording</button>
+  </div>
+  
+  <button id="downloadBtn" disabled>Download Recording</button>
+  <button id="playBtn" disabled>Play Recording</button>
+  
+  <div id="status" class="status">Ready to capture...</div>
+  
+  <div id="stats" class="stats">
+    <div class="stat-row">
+      <span class="stat-label">Duration:</span>
+      <span class="stat-value" id="duration">0s</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Chunks:</span>
+      <span class="stat-value" id="chunks">0</span>
+    </div>
+    <div class="stat-row">
+      <span class="stat-label">Size:</span>
+      <span class="stat-value" id="size">0 KB</span>
+    </div>
+  </div>
+  
+  <audio id="audioPlayer" controls></audio>
+
+  <script src="popup.js"></script>
+</body>
+</html>

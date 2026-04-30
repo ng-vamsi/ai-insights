@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Sales Audio Insider",
+  "version": "1.0",
+  "description": "Captures tab and mic audio for sales insights.",
+  "permissions": [
+    "tabCapture",
+    "offscreen",
+    "tabs",
+    "activeTab",
+    "storage",
+    "downloads"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "host_permissions": [
+    "<all_urls>"
+  ]
+}
