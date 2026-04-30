@@ -3,7 +3,7 @@
 <head>
   <style>
     body { 
-      width: 300px; 
+      width: 400px; 
       padding: 15px; 
       font-family: sans-serif; 
     }
@@ -12,6 +12,45 @@
       margin: 0 0 15px 0; 
       text-align: center; 
       color: #333;
+    }
+    
+    .api-key-section {
+      margin-bottom: 15px;
+      padding: 10px;
+      background: #fff3cd;
+      border-radius: 4px;
+      border: 1px solid #ffc107;
+    }
+    
+    .api-key-section.configured {
+      background: #d4edda;
+      border-color: #28a745;
+    }
+    
+    .api-key-input {
+      display: flex;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    
+    .api-key-input input {
+      flex: 1;
+      padding: 5px;
+      border: 1px solid #ddd;
+      border-radius: 3px;
+      font-size: 12px;
+    }
+    
+    .api-key-input button {
+      padding: 5px 10px;
+      font-size: 12px;
+      flex: none;
+    }
+    
+    .api-key-label {
+      font-size: 11px;
+      color: #666;
+      margin-bottom: 5px;
     }
     
     .controls {
@@ -135,10 +174,63 @@
     #audioPlayer.active {
       display: block;
     }
+    
+    .transcription-section {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+    }
+    
+    .transcription-section.active {
+      display: block;
+    }
+    
+    .transcription-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: #333;
+      margin-bottom: 8px;
+    }
+    
+    .transcript-item {
+      font-size: 11px;
+      padding: 5px;
+      margin-bottom: 5px;
+      background: white;
+      border-radius: 3px;
+      border-left: 3px solid #4285f4;
+    }
+    
+    .transcript-item.interim {
+      opacity: 0.6;
+      border-left-color: #ccc;
+    }
+    
+    .transcript-time {
+      font-size: 10px;
+      color: #999;
+      margin-right: 5px;
+    }
+    
+    .transcript-text {
+      color: #333;
+    }
   </style>
 </head>
 <body>
   <h3>Sales AI Listener</h3>
+  
+  <div id="apiKeySection" class="api-key-section">
+    <div class="api-key-label">Deepgram API Key:</div>
+    <div class="api-key-input">
+      <input type="password" id="apiKeyInput" placeholder="Enter your Deepgram API key">
+      <button id="saveApiKeyBtn">Save</button>
+    </div>
+  </div>
   
   <div class="controls">
     <button id="startBtn">Start Recording</button>
@@ -166,6 +258,11 @@
   </div>
   
   <audio id="audioPlayer" controls></audio>
+  
+  <div id="transcriptionSection" class="transcription-section">
+    <div class="transcription-title">Live Transcription:</div>
+    <div id="transcriptContainer"></div>
+  </div>
 
   <script src="popup.js"></script>
 </body>

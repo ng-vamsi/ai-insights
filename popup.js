@@ -9,8 +9,59 @@ const durationSpan = document.getElementById('duration');
 const chunksSpan = document.getElementById('chunks');
 const sizeSpan = document.getElementById('size');
 const audioPlayer = document.getElementById('audioPlayer');
+const apiKeyInput = document.getElementById('apiKeyInput');
+const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+const apiKeySection = document.getElementById('apiKeySection');
+const transcriptionSection = document.getElementById('transcriptionSection');
+const transcriptContainer = document.getElementById('transcriptContainer');
 
 let isRecording = false;
+let deepgramApiKey = null;
+
+// Load API key on startup
+chrome.storage.local.get(['deepgramApiKey'], (result) => {
+  if (result.deepgramApiKey) {
+    deepgramApiKey = result.deepgramApiKey;
+    apiKeyInput.value = '••••••••••••';
+    apiKeyInput.disabled = true;
+    apiKeySection.classList.add('configured');
+    saveApiKeyBtn.textContent = 'Change';
+  }
+});
+
+// Save API key
+saveApiKeyBtn.addEventListener('click', () => {
+  if (apiKeySection.classList.contains('configured')) {
+    // Allow editing
+    apiKeyInput.value = '';
+    apiKeyInput.disabled = false;
+    apiKeyInput.focus();
+    apiKeySection.classList.remove('configured');
+    saveApiKeyBtn.textContent = 'Save';
+  } else {
+    // Save new key
+    const key = apiKeyInput.value.trim();
+    if (key.length < 10) {
+      alert('Please enter a valid Deepgram API key');
+      return;
+    }
+    
+    chrome.storage.local.set({ deepgramApiKey: key }, () => {
+      deepgramApiKey = key;
+      apiKeyInput.value = '••••••••••••';
+      apiKeyInput.disabled = true;
+      apiKeySection.classList.add('configured');
+      saveApiKeyBtn.textContent = 'Change';
+      statusDiv.textContent = 'API key saved successfully!';
+      
+      // Notify background about the new key
+      chrome.runtime.sendMessage({ 
+        type: 'SET_DEEPGRAM_KEY', 
+        apiKey: key 
+      });
+    });
+  }
+});
 
 // Listen for recording stats updates and responses from background
 chrome.runtime.onMessage.addListener((message) => {
@@ -26,6 +77,19 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'PLAYBACK_RESPONSE') {
     console.log('✅ Received playback response:', message.data);
     handlePlaybackResponse(message.data);
+  }
+  
+  if (message.type === 'TRANSCRIPTION_UPDATE') {
+    console.log('📝 Received transcription:', message.data);
+    handleTranscription(message.data);
+  }
+  
+  if (message.type === 'TRANSCRIPTION_ERROR') {
+    console.error('❌ Transcription error:', message.error);
+    statusDiv.innerHTML = `Status: Transcription error - ${message.error}`;
+    // Still show the section so user knows something is happening
+    transcriptionSection.classList.add('active');
+    transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color: red;">⚠️ Error: ${message.error}</div>`;
   }
 });
 
@@ -51,6 +115,13 @@ startBtn.addEventListener('click', async () => {
     console.log('Already recording, ignoring click');
     return;
   }
+  
+  // Check if API key is configured
+  if (!deepgramApiKey) {
+    statusDiv.innerHTML = "Status: Please configure Deepgram API key first";
+    apiKeyInput.focus();
+    return;
+  }
 
   // 1. Get the current active tab
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -70,14 +141,17 @@ startBtn.addEventListener('click', async () => {
   downloadBtn.disabled = true;
   playBtn.disabled = true;
   statsDiv.classList.add('active');
+  transcriptionSection.classList.add('active');
+  transcriptContainer.innerHTML = ''; // Clear previous transcripts
   audioPlayer.classList.remove('active');
   audioPlayer.pause();
   audioPlayer.src = '';
 
-  // 3. Send message to background.js
+  // 3. Send message to background.js with API key
   chrome.runtime.sendMessage({ 
     type: 'INIT_RECORDING', 
-    tabId: tab.id 
+    tabId: tab.id,
+    deepgramApiKey: deepgramApiKey
   });
 
   console.log('Recording started for tab:', tab.id);
@@ -207,6 +281,72 @@ audioPlayer.addEventListener('ended', () => {
   statusDiv.innerHTML = "Status: Playback finished";
   playBtn.disabled = false;
 });
+
+// Handle transcription updates
+function handleTranscription(data) {
+  console.log('📝 Handling transcription:', data);
+  
+  const { transcript, is_final, timestamp } = data;
+  
+  if (!transcript || transcript.trim() === '') {
+    console.log('⚠️ Empty transcript, skipping');
+    return;
+  }
+  
+  // Make sure section is visible
+  if (!transcriptionSection.classList.contains('active')) {
+    console.log('✅ Activating transcription section');
+    transcriptionSection.classList.add('active');
+  }
+  
+  // Format timestamp
+  const time = new Date(timestamp).toLocaleTimeString('en-US', { 
+    hour12: false, 
+    minute: '2-digit', 
+    second: '2-digit' 
+  });
+  
+  // Check if this is an update to an interim transcript
+  const existingInterim = transcriptContainer.querySelector('.transcript-item.interim');
+  
+  if (is_final) {
+    console.log('✅ Final transcript:', transcript);
+    // Remove interim if exists
+    if (existingInterim) {
+      existingInterim.remove();
+    }
+    
+    // Add final transcript
+    const item = document.createElement('div');
+    item.className = 'transcript-item';
+    item.innerHTML = `
+      <span class="transcript-time">[${time}]</span>
+      <span class="transcript-text">${transcript}</span>
+    `;
+    transcriptContainer.appendChild(item);
+    
+    // Auto-scroll to bottom
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+  } else {
+    console.log('📝 Interim transcript:', transcript);
+    // Update or create interim transcript
+    if (existingInterim) {
+      existingInterim.querySelector('.transcript-text').textContent = transcript;
+      existingInterim.querySelector('.transcript-time').textContent = `[${time}]`;
+    } else {
+      const item = document.createElement('div');
+      item.className = 'transcript-item interim';
+      item.innerHTML = `
+        <span class="transcript-time">[${time}]</span>
+        <span class="transcript-text">${transcript}</span>
+      `;
+      transcriptContainer.appendChild(item);
+    }
+    
+    // Auto-scroll to bottom
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+  }
+}
 
 audioPlayer.addEventListener('pause', () => {
   if (!audioPlayer.ended) {

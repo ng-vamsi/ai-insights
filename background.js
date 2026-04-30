@@ -6,13 +6,24 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartTime = null;
 let recordingTabId = null;
+let deepgramApiKey = null;
+let deepgramSocket = null;
+let deepgramConnected = false;
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     console.log('📨 Message received in background.js:', message )
 
+  // Handle SET_DEEPGRAM_KEY
+  if (message.type === 'SET_DEEPGRAM_KEY') {
+    deepgramApiKey = message.apiKey;
+    console.log('🔑 Deepgram API key configured');
+    return false;
+  }
+
   // Handle INIT_RECORDING with async operations
   if (message.type === 'INIT_RECORDING') {
+    deepgramApiKey = message.deepgramApiKey || deepgramApiKey;
     handleInitRecording(message.tabId);
     return false; // No response needed
   }
@@ -55,6 +66,13 @@ async function handleInitRecording(tabId) {
   recordingTabId = tabId;
   console.log('📝 Recording state initialized');
 
+  // Initialize Deepgram connection if API key is available
+  if (deepgramApiKey) {
+    initDeepgramConnection();
+  } else {
+    console.warn('⚠️ No Deepgram API key - transcription disabled');
+  }
+
   // 1. Get the stream ID for the specific tab
   console.log('📺 Getting stream ID for tab:', tabId);
   const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
@@ -93,6 +111,103 @@ async function handleInitRecording(tabId) {
   }, 1000);
 }
 
+// Initialize Deepgram WebSocket connection
+function initDeepgramConnection() {
+  console.log('🌐 Initializing Deepgram connection...');
+  console.log('🔑 Using API key:', deepgramApiKey ? `${deepgramApiKey.substring(0, 10)}...` : 'NONE');
+  
+  try {
+    // Deepgram WebSocket URL with parameters
+    // Using 'webm_opus' encoding to match our MediaRecorder format
+    const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
+      model: 'nova-2',
+      language: 'en',
+      punctuate: 'true',
+      interim_results: 'true',
+      encoding: 'opus',
+      channels: '1'
+    }).toString();
+    
+    console.log('🔗 Connecting to:', deepgramUrl);
+    deepgramSocket = new WebSocket(deepgramUrl, ['token', deepgramApiKey]);
+    
+    deepgramSocket.onopen = () => {
+      console.log('✅ Deepgram WebSocket connected');
+      deepgramConnected = true;
+      
+      // Notify popup
+      chrome.runtime.sendMessage({
+        type: 'TRANSCRIPTION_UPDATE',
+        data: {
+          transcript: 'Transcription service connected...',
+          is_final: true,
+          timestamp: Date.now()
+        }
+      }).catch(() => {});
+    };
+    
+    deepgramSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        console.log('📨 Deepgram message:', data);
+        
+        // Handle metadata message
+        if (data.type === 'Metadata') {
+          console.log('ℹ️ Deepgram metadata:', data);
+          return;
+        }
+        
+        // Handle results message
+        if (data.type === 'Results' || data.channel) {
+          if (data.channel && data.channel.alternatives && data.channel.alternatives[0]) {
+            const alternative = data.channel.alternatives[0];
+            const transcript = alternative.transcript;
+            const is_final = data.is_final || false;
+            
+            console.log(`📝 Transcription (${is_final ? 'final' : 'interim'}):`, transcript);
+            
+            if (transcript && transcript.trim() !== '') {
+              // Send to popup
+              chrome.runtime.sendMessage({
+                type: 'TRANSCRIPTION_UPDATE',
+                data: {
+                  transcript: transcript,
+                  is_final: is_final,
+                  timestamp: Date.now()
+                }
+              }).catch(() => {});
+            }
+          }
+        }
+      } catch (err) {
+        console.error('❌ Error parsing Deepgram response:', err, event.data);
+      }
+    };
+    
+    deepgramSocket.onerror = (error) => {
+      console.error('❌ Deepgram WebSocket error:', error);
+      deepgramConnected = false;
+      
+      chrome.runtime.sendMessage({
+        type: 'TRANSCRIPTION_ERROR',
+        error: 'WebSocket connection error'
+      }).catch(() => {});
+    };
+    
+    deepgramSocket.onclose = () => {
+      console.log('🔌 Deepgram WebSocket closed');
+      deepgramConnected = false;
+    };
+    
+  } catch (err) {
+    console.error('❌ Error initializing Deepgram:', err);
+    chrome.runtime.sendMessage({
+      type: 'TRANSCRIPTION_ERROR',
+      error: err.message
+    }).catch(() => {});
+  }
+}
+
 function handleAudioChunk(payload) {
   const { data, size, mimeType } = payload;
   
@@ -110,6 +225,23 @@ function handleAudioChunk(payload) {
     audioChunks.push(audioBlob);
     const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
     console.log('💾 Stored chunk #' + audioChunks.length + ' | Duration:', duration + 's | Total chunks:', audioChunks.length);
+    
+    // Send to Deepgram if connected
+    if (deepgramConnected && deepgramSocket && deepgramSocket.readyState === WebSocket.OPEN) {
+      try {
+        // Send WebM/Opus audio directly to Deepgram
+        audioBlob.arrayBuffer().then(buffer => {
+          deepgramSocket.send(buffer);
+          console.log('📤 Sent audio to Deepgram:', buffer.byteLength, 'bytes, Format: audio/webm;codecs=opus');
+        }).catch(err => {
+          console.error('❌ Error converting audio to buffer:', err);
+        });
+      } catch (err) {
+        console.error('❌ Error sending to Deepgram:', err);
+      }
+    } else {
+      console.warn('⚠️ Not sending to Deepgram - Connected:', deepgramConnected, 'Socket state:', deepgramSocket?.readyState);
+    }
     
     // Update popup with recording stats
     chrome.runtime.sendMessage({
@@ -130,6 +262,23 @@ function handleStopRecording(sendResponse) {
   console.log('Current state - isRecording:', isRecording, 'chunks:', audioChunks.length);
   
   isRecording = false;
+  
+  // Close Deepgram connection
+  if (deepgramSocket) {
+    console.log('🔌 Closing Deepgram connection...');
+    try {
+      // Send closing message to Deepgram
+      if (deepgramSocket.readyState === WebSocket.OPEN) {
+        deepgramSocket.send(JSON.stringify({ type: 'CloseStream' }));
+      }
+      deepgramSocket.close();
+      deepgramSocket = null;
+      deepgramConnected = false;
+      console.log('✅ Deepgram connection closed');
+    } catch (err) {
+      console.error('Error closing Deepgram:', err);
+    }
+  }
   
   const duration = recordingStartTime ? Math.floor((Date.now() - recordingStartTime) / 1000) : 0;
   const responseData = { 
