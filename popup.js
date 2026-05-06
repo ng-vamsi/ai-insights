@@ -185,11 +185,8 @@ chrome.runtime.onMessage.addListener((message) => {
     statusDiv.textContent = `Status: Transcription error — ${message.error}`;
     transcriptionSection.classList.add('active');
     transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color:#ea4335;">Error: ${message.error}</div>`;
-    // Scroll to ensure error is visible
-    const errorItem = transcriptContainer.firstElementChild;
-    if (errorItem) {
-      errorItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-    }
+    // Scroll only the transcript container to show error, not the main window
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
   }
   
   if (message.type === 'INSIGHTS_READY') {
@@ -481,8 +478,8 @@ function handleTranscription(data) {
     `;
     transcriptContainer.appendChild(item);
     
-    // Scroll the new item into view - this is more reliable than scrollTop
-    item.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    // Scroll only the transcript container, not the main window
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
   } else {
     console.log('📝 Interim transcript:', transcript);
     // Update or create interim transcript
@@ -497,16 +494,10 @@ function handleTranscription(data) {
         <span class="transcript-text">${transcript}</span>
       `;
       transcriptContainer.appendChild(item);
-      
-      // Scroll the new item into view
-      item.scrollIntoView({ behavior: 'auto', block: 'nearest' });
     }
     
-    // For interim updates, also scroll to ensure latest is visible
-    const lastItem = transcriptContainer.lastElementChild;
-    if (lastItem && !is_final) {
-      lastItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
-    }
+    // Scroll only the transcript container, not the main window
+    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
   }
 }
 
@@ -688,11 +679,6 @@ function displayInsights(insights) {
 
   // Store transcript for AI analysis
   currentTranscriptText = insights.fullText || '';
-  
-  // Auto-scroll to insights
-  setTimeout(() => {
-    insightsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }, 100);
 }
 
 function renderMarkdown(text) {
