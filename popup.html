@@ -3,7 +3,7 @@
 <head>
   <style>
     body { 
-      width: 400px; 
+      width: 500px; 
       padding: 15px; 
       font-family: sans-serif; 
     }
@@ -219,17 +219,123 @@
     .transcript-text {
       color: #333;
     }
+    
+    .insights-section {
+      margin-top: 10px;
+      padding: 10px;
+      background: #f0f8ff;
+      border-radius: 4px;
+      display: none;
+      border: 1px solid #4285f4;
+    }
+    
+    .insights-section.active {
+      display: block;
+    }
+    
+    .insights-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: #4285f4;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+    
+    .insight-card {
+      background: white;
+      padding: 8px;
+      margin-bottom: 8px;
+      border-radius: 3px;
+      font-size: 11px;
+    }
+    
+    .insight-label {
+      font-weight: 600;
+      color: #666;
+      margin-bottom: 3px;
+    }
+    
+    .insight-value {
+      color: #333;
+    }
+    
+    .sentiment-positive { color: #28a745; }
+    .sentiment-neutral { color: #6c757d; }
+    .sentiment-negative { color: #dc3545; }
+    
+    .stat-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    
+    .stat-item {
+      background: #f8f9fa;
+      padding: 5px;
+      border-radius: 3px;
+      text-align: center;
+    }
+    
+    .stat-number {
+      font-size: 16px;
+      font-weight: 600;
+      color: #4285f4;
+    }
+    
+    .stat-label {
+      font-size: 10px;
+      color: #666;
+    }
+    
+    .key-phrases {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin-top: 5px;
+    }
+    
+    .phrase-tag {
+      background: #e7f3ff;
+      padding: 3px 8px;
+      border-radius: 12px;
+      font-size: 10px;
+      color: #4285f4;
+      border: 1px solid #4285f4;
+    }
+    
+    .action-list {
+      margin-top: 5px;
+    }
+    
+    .action-item {
+      font-size: 10px;
+      padding: 4px;
+      margin-bottom: 3px;
+      background: #fff3cd;
+      border-left: 3px solid #ffc107;
+      border-radius: 2px;
+    }
   </style>
 </head>
 <body>
   <h3>Sales AI Listener</h3>
   
   <div id="apiKeySection" class="api-key-section">
-    <div class="api-key-label">Deepgram API Key:</div>
+    <div class="api-key-label">Deepgram API Key (Required):</div>
     <div class="api-key-input">
       <input type="password" id="apiKeyInput" placeholder="Enter your Deepgram API key">
       <button id="saveApiKeyBtn">Save</button>
     </div>
+    <details style="margin-top: 5px;">
+      <summary style="font-size: 10px; color: #666; cursor: pointer;">Optional: OpenAI for deeper insights</summary>
+      <div class="api-key-input" style="margin-top: 5px;">
+        <input type="password" id="openaiKeyInput" placeholder="OpenAI API key (optional)" style="font-size: 11px;">
+        <button id="saveOpenaiKeyBtn" style="font-size: 11px;">Save</button>
+      </div>
+    </details>
   </div>
   
   <div class="controls">
@@ -262,6 +368,16 @@
   <div id="transcriptionSection" class="transcription-section">
     <div class="transcription-title">Live Transcription:</div>
     <div id="transcriptContainer"></div>
+  </div>
+  
+  <div id="insightsSection" class="insights-section">
+    <div class="insights-title">
+      AI Insights
+      <button id="generateAISummaryBtn" style="margin-left: auto; padding: 3px 8px; font-size: 10px; background: #4285f4; color: white; border: none; border-radius: 3px; cursor: pointer;">
+        Deep Analysis
+      </button>
+    </div>
+    <div id="insightsContainer"></div>
   </div>
 
   <script src="popup.js"></script>

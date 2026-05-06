@@ -11,21 +11,33 @@ const sizeSpan = document.getElementById('size');
 const audioPlayer = document.getElementById('audioPlayer');
 const apiKeyInput = document.getElementById('apiKeyInput');
 const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
+const openaiKeyInput = document.getElementById('openaiKeyInput');
+const saveOpenaiKeyBtn = document.getElementById('saveOpenaiKeyBtn');
 const apiKeySection = document.getElementById('apiKeySection');
 const transcriptionSection = document.getElementById('transcriptionSection');
 const transcriptContainer = document.getElementById('transcriptContainer');
+const insightsSection = document.getElementById('insightsSection');
+const insightsContainer = document.getElementById('insightsContainer');
+const generateAISummaryBtn = document.getElementById('generateAISummaryBtn');
 
 let isRecording = false;
 let deepgramApiKey = null;
+let currentTranscriptText = '';
 
 // Load API key on startup
-chrome.storage.local.get(['deepgramApiKey'], (result) => {
+chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
   if (result.deepgramApiKey) {
     deepgramApiKey = result.deepgramApiKey;
     apiKeyInput.value = '••••••••••••';
     apiKeyInput.disabled = true;
     apiKeySection.classList.add('configured');
     saveApiKeyBtn.textContent = 'Change';
+  }
+  
+  if (result.openaiApiKey) {
+    openaiKeyInput.value = '••••••••••••';
+    openaiKeyInput.disabled = true;
+    saveOpenaiKeyBtn.textContent = 'Change';
   }
 });
 
@@ -63,6 +75,42 @@ saveApiKeyBtn.addEventListener('click', () => {
   }
 });
 
+// Save OpenAI API key (optional)
+saveOpenaiKeyBtn.addEventListener('click', () => {
+  if (openaiKeyInput.disabled) {
+    // Allow editing
+    openaiKeyInput.value = '';
+    openaiKeyInput.disabled = false;
+    openaiKeyInput.focus();
+    saveOpenaiKeyBtn.textContent = 'Save';
+  } else {
+    // Save new key
+    const key = openaiKeyInput.value.trim();
+    if (key.length > 0 && key.length < 20) {
+      alert('Please enter a valid OpenAI API key');
+      return;
+    }
+    
+    if (key.length === 0) {
+      // Clear the key
+      chrome.storage.local.remove('openaiApiKey', () => {
+        openaiKeyInput.value = '';
+        openaiKeyInput.disabled = false;
+        saveOpenaiKeyBtn.textContent = 'Save';
+        statusDiv.textContent = 'OpenAI key removed';
+      });
+      return;
+    }
+    
+    chrome.storage.local.set({ openaiApiKey: key }, () => {
+      openaiKeyInput.value = '••••••••••••';
+      openaiKeyInput.disabled = true;
+      saveOpenaiKeyBtn.textContent = 'Change';
+      statusDiv.textContent = 'OpenAI key saved! You can now use deep AI analysis.';
+    });
+  }
+});
+
 // Listen for recording stats updates and responses from background
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'RECORDING_STATS') {
@@ -90,6 +138,28 @@ chrome.runtime.onMessage.addListener((message) => {
     // Still show the section so user knows something is happening
     transcriptionSection.classList.add('active');
     transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color: red;">⚠️ Error: ${message.error}</div>`;
+  }
+  
+  if (message.type === 'INSIGHTS_READY') {
+    console.log('💡 Received insights:', message.data);
+    displayInsights(message.data);
+  }
+  
+  if (message.type === 'LIVE_INSIGHTS_UPDATE') {
+    console.log('📊 Received live insights:', message.data);
+    displayLiveInsights(message.data);
+  }
+  
+  if (message.type === 'AI_SUMMARY_READY') {
+    console.log('🤖 Received AI summary:', message.data);
+    displayAISummary(message.data);
+  }
+  
+  if (message.type === 'AI_SUMMARY_ERROR') {
+    console.error('❌ AI summary error:', message.error);
+    generateAISummaryBtn.disabled = false;
+    generateAISummaryBtn.textContent = 'Deep Analysis';
+    alert('Error generating AI summary: ' + message.error);
   }
 });
 
@@ -142,7 +212,9 @@ startBtn.addEventListener('click', async () => {
   playBtn.disabled = true;
   statsDiv.classList.add('active');
   transcriptionSection.classList.add('active');
+  insightsSection.classList.add('active'); // Show insights during recording
   transcriptContainer.innerHTML = ''; // Clear previous transcripts
+  insightsContainer.innerHTML = '<div class="insight-card"><div class="insight-label">Live Insights</div><div class="insight-value">Analyzing conversation in real-time...</div></div>';
   audioPlayer.classList.remove('active');
   audioPlayer.pause();
   audioPlayer.src = '';
@@ -348,6 +420,346 @@ function handleTranscription(data) {
   }
 }
 
+// Display insights
+function displayInsights(insights) {
+  console.log('📊 Displaying insights:', insights);
+  
+  // Show insights section
+  insightsSection.classList.add('active');
+  
+  let html = '';
+  
+  // Summary
+  if (insights.summary) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Summary</div>
+        <div class="insight-value">${insights.summary}</div>
+      </div>
+    `;
+  }
+  
+  // Stats
+  if (insights.stats) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Statistics</div>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.wordCount || 0}</div>
+            <div class="stat-label">Words</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.questions || 0}</div>
+            <div class="stat-label">Questions</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.segments || 0}</div>
+            <div class="stat-label">Segments</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.speakers || 'N/A'}</div>
+            <div class="stat-label">Speakers</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Sentiment
+  if (insights.sentiment && insights.sentiment.dominant) {
+    const sentiment = insights.sentiment.dominant;
+    const sentimentClass = `sentiment-${sentiment}`;
+    const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
+    
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Overall Sentiment</div>
+        <div class="insight-value ${sentimentClass}">
+          ${sentimentLabel}
+        </div>
+        <div class="stat-grid" style="margin-top: 5px;">
+          <div class="stat-item">
+            <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
+            <div class="stat-label">Positive</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
+            <div class="stat-label">Neutral</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
+            <div class="stat-label">Negative</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Key Phrases
+  if (insights.keyPhrases && insights.keyPhrases.length > 0) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Key Phrases</div>
+        <div class="key-phrases">
+          ${insights.keyPhrases.map(phrase => 
+            `<span class="phrase-tag">${phrase}</span>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  // Topics (from Deepgram)
+  if (insights.topics && insights.topics.length > 0) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Detected Topics</div>
+        <div class="key-phrases">
+          ${insights.topics.map(topic => 
+            `<span class="phrase-tag" style="background: #e8f5e9; color: #2e7d32; border-color: #2e7d32;">${topic}</span>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  // Action Items
+  if (insights.actionItems && insights.actionItems.length > 0) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Action Items (${insights.actionItems.length})</div>
+        <div class="action-list">
+          ${insights.actionItems.map(item => 
+            `<div class="action-item">${item}</div>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  insightsContainer.innerHTML = html;
+  
+  // Store transcript for AI analysis
+  currentTranscriptText = insights.fullText || '';
+  
+  // Auto-scroll to insights
+  setTimeout(() => {
+    insightsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, 100);
+}
+
+// Display AI-generated summary
+function displayAISummary(summary) {
+  generateAISummaryBtn.disabled = false;
+  generateAISummaryBtn.textContent = 'Deep Analysis';
+  
+  const aiCard = document.createElement('div');
+  aiCard.className = 'insight-card';
+  aiCard.style.background = '#f0f8ff';
+  aiCard.style.border = '2px solid #4285f4';
+  aiCard.innerHTML = `
+    <div class="insight-label">AI-Powered Deep Analysis</div>
+    <div class="insight-value" style="white-space: pre-wrap; line-height: 1.4;">${summary}</div>
+  `;
+  
+  insightsContainer.insertBefore(aiCard, insightsContainer.firstChild);
+  
+  // Scroll to show the new summary
+  aiCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// Display live insights during recording
+function displayLiveInsights(insights) {
+  if (!insights) return;
+  
+  let html = '';
+  
+  // Live indicator
+  html += `
+    <div class="insight-card" style="background: #e8f5e9; border-left: 3px solid #4caf50;">
+      <div class="insight-label">Live Insights (Updating...)</div>
+      <div class="insight-value" style="font-size: 10px; color: #666;">Stats update as you speak</div>
+    </div>
+  `;
+  
+  // SALES-SPECIFIC INSIGHTS
+  if (insights.salesInsights) {
+    const si = insights.salesInsights;
+    
+    // Intent Score
+    html += `
+      <div class="insight-card" style="background: #fff8e1; border-left: 3px solid #ffc107;">
+        <div class="insight-label">Buyer Intent</div>
+        <div class="insight-value" style="font-weight: 600; color: #f57c00;">${si.intentScore}</div>
+      </div>
+    `;
+    
+    // Engagement Level
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Engagement Level</div>
+        <div class="insight-value" style="font-weight: 600; color: ${
+          si.engagementLevel === 'Very High' ? '#4caf50' :
+          si.engagementLevel === 'High' ? '#8bc34a' :
+          si.engagementLevel === 'Medium' ? '#ffc107' : '#ff9800'
+        };">${si.engagementLevel}</div>
+      </div>
+    `;
+    
+    // Emotional State
+    if (si.emotions && si.emotions.length > 0) {
+      html += `
+        <div class="insight-card">
+          <div class="insight-label">Prospect Feeling</div>
+          <div class="key-phrases">
+            ${si.emotions.map(emotion => 
+              `<span class="phrase-tag" style="background: #e3f2fd; color: #1976d2; border-color: #1976d2;">${emotion}</span>`
+            ).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    // Buying Signals
+    if (si.buyingSignals && si.buyingSignals.length > 0) {
+      html += `
+        <div class="insight-card" style="background: #e8f5e9;">
+          <div class="insight-label">Buying Signals (${si.buyingSignals.length})</div>
+          <div class="action-list">
+            ${si.buyingSignals.map(({ text, signal }) => 
+              `<div class="action-item" style="background: #c8e6c9; border-left-color: #4caf50;">
+                <strong style="color: #2e7d32;">${signal}</strong><br>
+                <span style="font-size: 9px;">"${text}"</span>
+              </div>`
+            ).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    // Objections
+    if (si.objections && si.objections.length > 0) {
+      html += `
+        <div class="insight-card" style="background: #ffebee;">
+          <div class="insight-label">Objections Detected (${si.objections.length})</div>
+          <div class="action-list">
+            ${si.objections.map(({ text, type }) => 
+              `<div class="action-item" style="background: #ffcdd2; border-left-color: #f44336;">
+                <strong style="color: #c62828;">${type}</strong><br>
+                <span style="font-size: 9px;">"${text}"</span>
+              </div>`
+            ).join('')}
+          </div>
+        </div>
+      `;
+    }
+    
+    // Pain Points
+    if (si.painPoints && si.painPoints.length > 0) {
+      html += `
+        <div class="insight-card" style="background: #fff3e0;">
+          <div class="insight-label">Pain Points Mentioned</div>
+          <div class="action-list">
+            ${si.painPoints.map(point => 
+              `<div class="action-item" style="background: #ffe0b2; border-left-color: #ff9800; font-size: 10px;">
+                "${point}"
+              </div>`
+            ).join('')}
+          </div>
+        </div>
+      `;
+    }
+  }
+  
+  // Stats
+  if (insights.stats) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Statistics</div>
+        <div class="stat-grid">
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.wordCount || 0}</div>
+            <div class="stat-label">Words</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.questions || 0}</div>
+            <div class="stat-label">Questions</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.segments || 0}</div>
+            <div class="stat-label">Segments</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number">${insights.stats.speakers || 'N/A'}</div>
+            <div class="stat-label">Speakers</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Sentiment
+  if (insights.sentiment && insights.sentiment.dominant) {
+    const sentiment = insights.sentiment.dominant;
+    const sentimentClass = `sentiment-${sentiment}`;
+    const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
+    
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Overall Sentiment</div>
+        <div class="insight-value ${sentimentClass}">
+          ${sentimentLabel}
+        </div>
+        <div class="stat-grid" style="margin-top: 5px;">
+          <div class="stat-item">
+            <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
+            <div class="stat-label">Positive</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
+            <div class="stat-label">Neutral</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
+            <div class="stat-label">Negative</div>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  // Key Phrases
+  if (insights.keyPhrases && insights.keyPhrases.length > 0) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Key Phrases</div>
+        <div class="key-phrases">
+          ${insights.keyPhrases.map(phrase => 
+            `<span class="phrase-tag">${phrase}</span>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  // Action Items
+  if (insights.actionItems && insights.actionItems.length > 0) {
+    html += `
+      <div class="insight-card">
+        <div class="insight-label">Action Items (${insights.actionItems.length})</div>
+        <div class="action-list">
+          ${insights.actionItems.map(item => 
+            `<div class="action-item">${item}</div>`
+          ).join('')}
+        </div>
+      </div>
+    `;
+  }
+  
+  insightsContainer.innerHTML = html;
+}
+
 audioPlayer.addEventListener('pause', () => {
   if (!audioPlayer.ended) {
     statusDiv.innerHTML = "Status: Paused";
@@ -356,4 +768,20 @@ audioPlayer.addEventListener('pause', () => {
 
 audioPlayer.addEventListener('play', () => {
   statusDiv.innerHTML = "Status: Playing...";
+});
+
+// AI Summary button
+generateAISummaryBtn.addEventListener('click', () => {
+  if (!currentTranscriptText) {
+    alert('No transcript available for analysis');
+    return;
+  }
+  
+  generateAISummaryBtn.disabled = true;
+  generateAISummaryBtn.textContent = 'Analyzing...';
+  
+  chrome.runtime.sendMessage({
+    type: 'GENERATE_AI_SUMMARY',
+    transcript: currentTranscriptText
+  });
 });
