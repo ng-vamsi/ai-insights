@@ -45,10 +45,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return handleStopRecording(sendResponse); // Returns true to keep channel open
   }
 
-  // Handle download request
+  // Handle download request — response sent via DOWNLOAD_RESPONSE message
   if (message.type === 'DOWNLOAD_RECORDING') {
-    handleDownloadRecording(sendResponse);
-    return true; // Keep channel open for async response
+    handleDownloadRecording();
+    return false;
   }
 
   // Handle playback request
@@ -62,7 +62,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     handleGenerateAISummary(message.transcript);
     return false;
   }
-  
+
+  // Return current recording state so popup can restore UI after reopen
+  if (message.type === 'GET_STATE') {
+    sendResponse({
+      isRecording,
+      hasRecording: audioChunks.length > 0,
+      duration: recordingStartTime ? Math.floor((Date.now() - recordingStartTime) / 1000) : 0
+    });
+    return true;
+  }
+
   // Unknown message type
   return false;
 });
@@ -193,26 +203,41 @@ function initDeepgramConnection() {
             const intents = data.metadata?.intents || [];
             
             if (is_final && transcript && transcript.trim() !== '') {
+              // Use Deepgram sentiment if available, else fall back to rule-based
+              const textSentiment = analyzeTextSentiment(transcript);
+              const effectiveSentiment = sentiment || textSentiment;
+
               // Store final transcript for insights
               fullTranscript.push({
                 text: transcript,
                 timestamp: Date.now(),
-                sentiment: sentiment,
+                sentiment: effectiveSentiment,
                 speaker: data.channel.alternatives[0].words?.[0]?.speaker
               });
-              
-              if (sentiment) sentimentData.push(sentiment);
+
+              if (effectiveSentiment) sentimentData.push(effectiveSentiment);
               if (topics.length > 0) detectedTopics.push(...topics);
               if (intents.length > 0) detectedIntents.push(...intents);
               
               console.log('📊 Stored transcript segment:', { sentiment, topics, intents });
               
-              // Generate and send live insights
+              // Generate and send live insights with latency
               const liveInsights = generateLiveInsights();
-              chrome.runtime.sendMessage({
-                type: 'LIVE_INSIGHTS_UPDATE',
-                data: liveInsights
-              }).catch(() => {});
+              if (liveInsights) {
+                const now = Date.now();
+                liveInsights.generatedAt = now;
+                // Use the timestamp of the last transcript segment for latency
+                const lastTranscript = fullTranscript[fullTranscript.length - 1];
+                if (lastTranscript && lastTranscript.timestamp) {
+                  liveInsights.latencyMs = now - lastTranscript.timestamp;
+                } else {
+                  liveInsights.latencyMs = null;
+                }
+                chrome.runtime.sendMessage({
+                  type: 'LIVE_INSIGHTS_UPDATE',
+                  data: liveInsights
+                }).catch(() => {});
+              }
             }
             
             if (transcript && transcript.trim() !== '') {
@@ -354,8 +379,23 @@ function handleStopRecording(sendResponse) {
   
   // Generate insights from collected data
   const insights = generateInsights();
+  const insightsGeneratedAt = Date.now();
+  // Find the timestamp of the last transcript segment
+  let lastTranscriptTimestamp = null;
+  if (fullTranscript.length > 0) {
+    lastTranscriptTimestamp = fullTranscript[fullTranscript.length - 1].timestamp;
+  }
+  if (insights) {
+    insights.generatedAt = insightsGeneratedAt;
+    if (lastTranscriptTimestamp) {
+      insights.latencyMs = insightsGeneratedAt - lastTranscriptTimestamp;
+    } else {
+      insights.latencyMs = null;
+    }
+  }
+
   console.log('💡 Generated insights:', insights);
-  
+
   // Send response as a separate message instead of using sendResponse
   chrome.runtime.sendMessage({
     type: 'STOP_RECORDING_RESPONSE',
@@ -363,7 +403,7 @@ function handleStopRecording(sendResponse) {
   }).catch(err => {
     console.error('Failed to send stop response:', err);
   });
-  
+
   // Send insights to popup
   chrome.runtime.sendMessage({
     type: 'INSIGHTS_READY',
@@ -395,9 +435,37 @@ function generateLiveInsights() {
   const fullText = fullTranscript.map(t => t.text).join(' ');
   const wordCount = fullText.split(/\s+/).filter(w => w.length > 0).length;
   
-  // Count questions
-  const questions = fullTranscript.filter(t => t.text.includes('?')).length;
-  
+  // Extract actual question and doubt texts
+  const questionList = [];
+  const doubtList = [];
+  const doubtPatterns = [
+    /concern/i, /worried/i, /not sure/i, /unclear/i, /what if/i,
+    /does .* (mean|work|matter)/i, /is there/i, /can .* be/i,
+    /could .* be/i, /if .* then/i, /why .* not/i, /how .* work/i
+  ];
+
+  fullTranscript.forEach(t => {
+    const text = t.text.trim();
+    const questionsInText = [...text.matchAll(/[^.?!]*\?/g)]
+      .map(match => match[0].trim())
+      .filter(Boolean);
+
+    questionsInText.forEach(question => {
+      questionList.push(question);
+      if (doubtPatterns.some(pattern => pattern.test(question)) && !doubtList.includes(question)) {
+        doubtList.push(question);
+      }
+    });
+
+    if (doubtPatterns.some(pattern => pattern.test(text)) && !doubtList.includes(text)) {
+      doubtList.push(text);
+    }
+  });
+
+  const uniqueQuestions = [...new Set(questionList)].slice(0, 8);
+  const uniqueDoubts = [...new Set(doubtList)].slice(0, 8);
+  const questions = uniqueQuestions.length;
+
   // Sentiment analysis
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
   sentimentData.forEach(s => {
@@ -562,7 +630,10 @@ function generateLiveInsights() {
     },
     keyPhrases,
     actionItems: actionItems.length > 0 ? actionItems : [],
-    topics: [...new Set(detectedTopics)].slice(0, 5)
+    topics: [...new Set(detectedTopics)].slice(0, 5),
+    customerQuestions: uniqueQuestions,
+    customerDoubts: uniqueDoubts,
+    salesCoach: generateSalesCoachInsights(fullText)
   };
 }
 
@@ -582,10 +653,44 @@ function generateInsights() {
   
   // Combine all transcript text
   const fullText = fullTranscript.map(t => t.text).join(' ');
-  const wordCount = fullText.split(/\s+/).length;
-  
-  // Count questions
-  const questions = fullTranscript.filter(t => t.text.includes('?')).length;
+  const wordCount = fullText.split(/\s+/).filter(w => w.length > 0).length;
+
+  const questionList = [];
+  const doubtList = [];
+  const doubtPatterns = [
+    /concern/i,
+    /worried/i,
+    /not sure/i,
+    /unclear/i,
+    /what if/i,
+    /does .* (mean|work|matter)/i,
+    /is there/i,
+    /can .* be/i,
+    /could .* be/i,
+    /if .* then/i,
+    /why .* not/i,
+    /how .* work/i
+  ];
+
+  fullTranscript.forEach(t => {
+    const text = t.text.trim();
+    const questionsInText = [...text.matchAll(/[^.?!]*\?/g)]
+      .map(match => match[0].trim())
+      .filter(Boolean);
+
+    questionsInText.forEach(question => {
+      questionList.push(question);
+      if (doubtPatterns.some(pattern => pattern.test(question)) && !doubtList.includes(question)) {
+        doubtList.push(question);
+      }
+    });
+
+    if (doubtPatterns.some(pattern => pattern.test(text)) && !doubtList.includes(text)) {
+      doubtList.push(text);
+    }
+  });
+
+  const questions = questionList.length;
   
   // Sentiment analysis
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
@@ -613,12 +718,16 @@ function generateInsights() {
     .slice(0, 5)
     .map(([word]) => word);
   
-  // Detect action items (sentences with action verbs)
-  const actionVerbs = ['need', 'should', 'must', 'will', 'going to', 'have to', 'plan', 'schedule'];
+  // Detect action items (statements with action verbs)
+  const actionVerbs = ['need', 'should', 'must', 'will', 'going to', 'have to', 'plan', 'schedule', 'follow up', 'book', 'send', 'review'];
   const actionItems = fullTranscript
     .filter(t => actionVerbs.some(verb => t.text.toLowerCase().includes(verb)))
-    .map(t => t.text)
+    .map(t => t.text.trim())
     .slice(0, 5);
+
+  if (actionItems.length === 0 && questionList.length > 0) {
+    actionItems.push(`Follow up on customer question: "${questionList[0]}"`);
+  }
   
   // Speaker statistics (if diarization is available)
   const speakers = {};
@@ -635,13 +744,17 @@ function generateInsights() {
     `${questions} questions asked. ` +
     `${actionItems.length} action items identified.`;
   
+  const uniqueQuestions = [...new Set(questionList)].slice(0, 8);
+  const uniqueDoubts = [...new Set(doubtList)].slice(0, 8);
+
   return {
     summary,
     fullText, // Include for AI analysis
     stats: {
       duration,
       wordCount,
-      questions,
+      questions: uniqueQuestions.length,
+      doubts: uniqueDoubts.length,
       segments: fullTranscript.length,
       speakers: Object.keys(speakers).length
     },
@@ -652,7 +765,10 @@ function generateInsights() {
     topics: [...new Set(detectedTopics)].slice(0, 5),
     keyPhrases,
     actionItems,
-    speakerStats: speakers
+    customerQuestions: uniqueQuestions,
+    customerDoubts: uniqueDoubts,
+    speakerStats: speakers,
+    salesCoach: generateSalesCoachInsights(fullText)
   };
 }
 
@@ -686,38 +802,34 @@ async function handleGenerateAISummary(transcript) {
         model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
-          content: `You are an expert sales conversation analyst. Analyze the transcript and provide a comprehensive assessment:
+          content: `You are an expert sales coach. A sales rep just finished a call and needs your immediate, specific guidance. Analyze the transcript and respond using these exact markdown sections:
 
-1. BUYER INTENT & READINESS (0-100% score):
-   - How ready is the prospect to buy?
-   - What stage of the buying journey are they in?
-   
-2. KEY INSIGHTS:
-   - Customer's main pain points and challenges
-   - Buying signals detected (timeline questions, budget mentions, etc.)
-   - Objections raised and their severity
-   
-3. EMOTIONAL ANALYSIS:
-   - Prospect's emotional state (enthusiastic, cautious, skeptical, etc.)
-   - Level of engagement and interest
-   
-4. RECOMMENDATIONS:
-   - What should the sales person do next?
-   - Which objections need addressing?
-   - Suggested follow-up actions
-   
-5. DEAL HEALTH:
-   - Overall assessment: Strong/Medium/Weak
-   - Risk factors
-   - Opportunities
+## BUYER INTENT SCORE
+State a score from 0–100% and one of: Not Interested / Just Exploring / Showing Interest / Probable Buyer / Ready to Buy. Then one sentence explaining the rating based on what was actually said.
 
-Be specific, actionable, and reference actual statements from the conversation.`
+## WHAT HAPPENED
+2–3 bullet points summarizing the key moments of this call. Quote the prospect directly where relevant.
+
+## PROSPECT SIGNALS
+- **Positive signals:** list buying signals, interest indicators, or encouraging statements
+- **Objections / concerns:** list hesitations, doubts, or pushback — be specific
+- **Emotional state:** describe how the prospect came across (enthusiastic, skeptical, confused, warm, etc.)
+
+## WHAT TO DO NEXT
+Number these action items in priority order. Be direct and specific — tell the rep exactly what to say or do, not generic advice.
+
+## DEAL HEALTH
+**Overall:** Strong / Medium / Weak / Dead
+**Biggest risk:** one sentence
+**Best opportunity:** one sentence
+
+Keep total response under 450 words. Be direct. Reference actual words from the transcript.`
         }, {
           role: 'user',
-          content: `Analyze this sales conversation:\n\n${transcript}`
+          content: `Here is the sales call transcript to analyze:\n\n${transcript}`
         }],
-        max_tokens: 800,
-        temperature: 0.7
+        max_tokens: 1000,
+        temperature: 0.4
       })
     });
     
@@ -797,42 +909,162 @@ function generateFallbackSummary(transcript) {
   return summary;
 }
 
-function handleDownloadRecording(sendResponse) {
+function analyzeTextSentiment(text) {
+  const lower = text.toLowerCase();
+  const positiveWords = ['great', 'love', 'excellent', 'good', 'happy', 'yes', 'perfect', 'interested',
+    'sounds good', 'excited', 'amazing', 'definitely', 'absolutely', 'wonderful', 'fantastic',
+    'helpful', 'benefit', 'value', 'impressive', 'exactly', 'makes sense', 'like that', 'like this'];
+  const negativeWords = ['not', 'never', 'cant', 'cannot', 'wont', 'wouldnt', 'dont', 'difficult',
+    'problem', 'issue', 'concern', 'worried', 'expensive', 'too much', 'bad', 'wrong',
+    'unfortunately', 'doubt', 'unsure', 'confused', 'challenging', 'struggle', 'disappoint',
+    'hesitant', 'objection', 'not sure', 'no idea'];
+
+  let posScore = 0, negScore = 0;
+  positiveWords.forEach(w => { if (lower.includes(w)) posScore++; });
+  negativeWords.forEach(w => { if (lower.includes(w)) negScore++; });
+
+  if (posScore > negScore) return 'positive';
+  if (negScore > posScore) return 'negative';
+  return 'neutral';
+}
+
+function generateSalesCoachInsights(fullText) {
+  if (!fullText || fullText.trim().length === 0) return null;
+
+  const strongBuySignals = [
+    /\b(ready to buy|let'?s proceed|sign the contract|move forward|let'?s do it)\b/i,
+    /\b(how (do|can) (i|we) (get started|sign up|buy|purchase))\b/i,
+    /\b(when can (we|i) start|send (me|us) the (contract|agreement|invoice))\b/i,
+    /\b(i('?m| am) (sold|in)|we('?re| are) (in|ready)|yes,? let'?s)\b/i
+  ];
+
+  const clearNoSignals = [
+    /\b(not interested|not for us|don'?t need this|no thank you|pass on this|not the right fit)\b/i,
+    /\b(can'?t afford|way too expensive|no budget|out of (our )?budget)\b/i,
+    /\b(already (decided|chosen|selected)|going with (someone else|another|a competitor))\b/i,
+    /\b(not a priority|very low priority|no plans for this)\b/i
+  ];
+
+  const probableBuyerSignals = [
+    /\b(next steps?|follow[- ]?up|schedule (a )?(demo|call|meeting))\b/i,
+    /\b(interested in (seeing|learning|trying)|sounds (good|interesting|promising))\b/i,
+    /\b(like what (i'?m|i am) hearing|makes sense|can you (show|send|share))\b/i,
+    /\b(trial|pilot|proof of concept|poc|sandbox)\b/i
+  ];
+
+  const exploringSignals = [
+    /\b(just (looking|exploring)|comparing (options|solutions|vendors)|evaluating|researching)\b/i,
+    /\b(tell me more|more information|more details|learn more|curious about)\b/i,
+    /\b(what if|how would|could you|would it be|is it possible)\b/i
+  ];
+
+  const strongBuyCount = strongBuySignals.filter(p => p.test(fullText)).length;
+  const clearNoCount   = clearNoSignals.filter(p => p.test(fullText)).length;
+  const probableCount  = probableBuyerSignals.filter(p => p.test(fullText)).length;
+  const exploringCount = exploringSignals.filter(p => p.test(fullText)).length;
+
+  let intentLevel, intentLabel, intentColor, intentEmoji;
+
+  if (clearNoCount >= 1 && strongBuyCount === 0 && probableCount === 0) {
+    intentLevel = 'not-interested'; intentLabel = 'Not Interested';
+    intentColor = '#ea4335'; intentEmoji = '🔴';
+  } else if (strongBuyCount >= 1) {
+    intentLevel = 'ready-to-buy'; intentLabel = 'Ready to Buy';
+    intentColor = '#34a853'; intentEmoji = '🟢';
+  } else if (probableCount >= 1) {
+    intentLevel = 'probable-buyer'; intentLabel = 'Probable Buyer';
+    intentColor = '#fbbc04'; intentEmoji = '🟡';
+  } else if (exploringCount >= 1) {
+    intentLevel = 'exploring'; intentLabel = 'Just Exploring';
+    intentColor = '#ff9800'; intentEmoji = '🟠';
+  } else {
+    intentLevel = 'neutral'; intentLabel = 'Intent Unclear';
+    intentColor = '#9e9e9e'; intentEmoji = '⚪';
+  }
+
+  const nextActions = {
+    'not-interested': 'Address the core objection directly. Ask: "What specifically is your main concern?" Then listen — do not pitch.',
+    'ready-to-buy':   'Close NOW. Stop selling. Propose the contract, trial start date, or next concrete step and go quiet.',
+    'probable-buyer': 'Strike while warm. Schedule a follow-up demo or proposal within 24–48 hours. Tie value to their specific pain.',
+    'exploring':      'Be a consultant, not a pitcher. Share a relevant ROI data point or case study. Ask: "What\'s your evaluation criteria?"',
+    'neutral':        'Gauge intent directly: "On a scale of 1–10, how urgent is solving this problem right now?" Then listen carefully.'
+  };
+
+  const coachingTips = {
+    'not-interested': 'Acknowledge concern first ("I hear you..."). Reframe value around their specific pain, then ask if there\'s a version of this that would work for them.',
+    'ready-to-buy':   'Every extra word risks introducing doubt. Present one clear next step — then stop talking.',
+    'probable-buyer': 'Momentum is your friend. Make the next step completely friction-free — offer to send a calendar invite right now.',
+    'exploring':      'Understand their evaluation process before you try to sell. Find out who else is involved in the decision.',
+    'neutral':        'Figure out if this person is the actual decision-maker. Is there a timeline? Is there a budget? Qualify before you invest more time.'
+  };
+
+  const riskFactors = [];
+  if (/\b(competitor|alternative|other (vendor|option|solution|provider))\b/i.test(fullText))
+    riskFactors.push('Evaluating competitors');
+  if (/\b(budget|cost|expensive|price|afford)\b/i.test(fullText))
+    riskFactors.push('Price sensitivity detected');
+  if (/\b(not (sure|ready)|need (time|to think|approval)|think about it)\b/i.test(fullText))
+    riskFactors.push('Decision hesitation');
+  if (/\b(manager|boss|team|stakeholder|committee|approval|sign[- ]?off)\b/i.test(fullText))
+    riskFactors.push('Multiple decision-makers involved');
+  if (/\b(later|future|next (quarter|year|month|cycle))\b/i.test(fullText))
+    riskFactors.push('Timeline delay risk');
+  if (clearNoCount > 0 && probableCount > 0)
+    riskFactors.push('Mixed signals — probe to find the real blocker');
+
+  const opportunities = [];
+  if (/\b(pain|problem|struggle|challenge|difficult|issue|frustrat)\b/i.test(fullText))
+    opportunities.push('Pain point identified — anchor your value prop here');
+  if (/\b(deadline|urgent|asap|quickly|soon|immediately)\b/i.test(fullText))
+    opportunities.push('Urgency expressed — use timing as leverage');
+  if (/\b(budget|approved|allocated|set aside)\b/i.test(fullText) && !/too expensive/i.test(fullText))
+    opportunities.push('Budget may be available — confirm allocation');
+  if (/\b(referral|recommended|told about|heard from|colleague sent)\b/i.test(fullText))
+    opportunities.push('Warm referral — trust factor is already high');
+  if (/\b(impressed|interesting|like (that|this|it)|exciting|promising)\b/i.test(fullText))
+    opportunities.push('Positive reactions detected — reinforce those key benefits');
+
+  return {
+    intentLevel,
+    intentLabel,
+    intentColor,
+    intentEmoji,
+    nextAction: nextActions[intentLevel],
+    coachingTip: coachingTips[intentLevel],
+    riskFactors: riskFactors.slice(0, 4),
+    opportunities: opportunities.slice(0, 4)
+  };
+}
+
+function handleDownloadRecording() {
   console.log('💾 Download requested - Combining', audioChunks.length, 'chunks');
-  
+
+  const sendDownloadResponse = (data) => {
+    chrome.runtime.sendMessage({ type: 'DOWNLOAD_RESPONSE', data }).catch(() => {});
+  };
+
   if (audioChunks.length === 0) {
-    sendResponse({ success: false, error: 'No audio chunks recorded' });
+    sendDownloadResponse({ success: false, error: 'No audio chunks recorded' });
     return;
   }
-  
-  // Combine all chunks into one blob
+
   const finalBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
   console.log('✅ Combined blob size:', finalBlob.size, 'bytes');
-  
-  // Convert to data URL for download
+
   const reader = new FileReader();
   reader.onloadend = () => {
-    const dataUrl = reader.result;
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const filename = `recording-${timestamp}.webm`;
-    
-    // Trigger download
-    chrome.downloads.download({
-      url: dataUrl,
-      filename: filename,
-      saveAs: true
-    }, (downloadId) => {
-      console.log('📥 Download started:', filename, 'Download ID:', downloadId);
-    });
+    console.log('✅ Data URL ready, sending to popup for download');
+    sendDownloadResponse({ success: true, dataUrl: reader.result, size: finalBlob.size });
+  };
+  reader.onerror = () => {
+    sendDownloadResponse({ success: false, error: 'Failed to read audio data' });
   };
   reader.readAsDataURL(finalBlob);
-  
-  sendResponse({ success: true, size: finalBlob.size });
 }
 
 function handleGetRecordingBlob(sendResponse) {
   console.log('🎧 Playback requested');
-  
+
   if (audioChunks.length === 0) {
     console.error('❌ No audio chunks available for playback');
     chrome.runtime.sendMessage({
@@ -841,14 +1073,14 @@ function handleGetRecordingBlob(sendResponse) {
     }).catch(() => {});
     return;
   }
-  
+
   try {
     console.log('📦 Creating final blob from', audioChunks.length, 'chunks');
     const finalBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
     console.log('✅ Final blob created, size:', finalBlob.size, 'bytes');
-    
+
     const reader = new FileReader();
-    
+
     reader.onloadend = () => {
       console.log('✅ Data URL created, length:', reader.result.length);
       chrome.runtime.sendMessage({
@@ -858,7 +1090,7 @@ function handleGetRecordingBlob(sendResponse) {
         console.error('Failed to send playback response:', err);
       });
     };
-    
+
     reader.onerror = (error) => {
       console.error('❌ FileReader error:', error);
       chrome.runtime.sendMessage({
@@ -866,7 +1098,7 @@ function handleGetRecordingBlob(sendResponse) {
         data: { success: false, error: 'Failed to read audio data' }
       }).catch(() => {});
     };
-    
+
     console.log('📖 Reading blob as data URL...');
     reader.readAsDataURL(finalBlob);
   } catch (err) {

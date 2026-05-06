@@ -1,28 +1,63 @@
 // popup.js
-const startBtn = document.getElementById('startBtn');
-const stopBtn = document.getElementById('stopBtn');
-const downloadBtn = document.getElementById('downloadBtn');
-const playBtn = document.getElementById('playBtn');
-const statusDiv = document.getElementById('status');
-const statsDiv = document.getElementById('stats');
-const durationSpan = document.getElementById('duration');
-const chunksSpan = document.getElementById('chunks');
-const sizeSpan = document.getElementById('size');
-const audioPlayer = document.getElementById('audioPlayer');
-const apiKeyInput = document.getElementById('apiKeyInput');
-const saveApiKeyBtn = document.getElementById('saveApiKeyBtn');
-const openaiKeyInput = document.getElementById('openaiKeyInput');
-const saveOpenaiKeyBtn = document.getElementById('saveOpenaiKeyBtn');
-const apiKeySection = document.getElementById('apiKeySection');
-const transcriptionSection = document.getElementById('transcriptionSection');
+const startBtn            = document.getElementById('startBtn');
+const stopBtn             = document.getElementById('stopBtn');
+const downloadBtn         = document.getElementById('downloadBtn');
+const playBtn             = document.getElementById('playBtn');
+const statusDiv           = document.getElementById('status');
+const statsDiv            = document.getElementById('stats');
+const durationSpan        = document.getElementById('duration');
+const chunksSpan          = document.getElementById('chunks');
+const sizeSpan            = document.getElementById('size');
+const audioPlayer         = document.getElementById('audioPlayer');
+const apiKeyInput         = document.getElementById('apiKeyInput');
+const saveApiKeyBtn       = document.getElementById('saveApiKeyBtn');
+const openaiKeyInput      = document.getElementById('openaiKeyInput');
+const saveOpenaiKeyBtn    = document.getElementById('saveOpenaiKeyBtn');
+const apiKeySection       = document.getElementById('apiKeySection');
+const transcriptionSection= document.getElementById('transcriptionSection');
 const transcriptContainer = document.getElementById('transcriptContainer');
-const insightsSection = document.getElementById('insightsSection');
-const insightsContainer = document.getElementById('insightsContainer');
-const generateAISummaryBtn = document.getElementById('generateAISummaryBtn');
+const insightsSection     = document.getElementById('insightsSection');
+const insightsContainer   = document.getElementById('insightsContainer');
+const deepContainer       = document.getElementById('deepContainer');
+const generateAISummaryBtn= document.getElementById('generateAISummaryBtn');
+const tabInsights         = document.getElementById('tabInsights');
+const tabDeep             = document.getElementById('tabDeep');
+const insightsPanel       = document.getElementById('insightsPanel');
+const deepPanel           = document.getElementById('deepPanel');
+
+// ── Tab switching ────────────────────────────────────────
+function switchTab(tab) {
+  const toInsights = tab === 'insights';
+  tabInsights.classList.toggle('active', toInsights);
+  tabDeep.classList.toggle('active', !toInsights);
+  insightsPanel.classList.toggle('active', toInsights);
+  deepPanel.classList.toggle('active', !toInsights);
+}
+tabInsights.addEventListener('click', () => switchTab('insights'));
+tabDeep.addEventListener('click',     () => switchTab('deep'));
 
 let isRecording = false;
 let deepgramApiKey = null;
 let currentTranscriptText = '';
+
+// ── Restore UI state when popup reopens ─────────────────
+chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
+  if (chrome.runtime.lastError || !response) return;
+
+  if (response.isRecording) {
+    isRecording = true;
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    statsDiv.classList.add('active');
+    transcriptionSection.classList.add('active');
+    insightsSection.classList.add('active');
+    statusDiv.innerHTML = "Status: <span class='recording'>RECORDING...</span>";
+  } else if (response.hasRecording) {
+    downloadBtn.disabled = false;
+    playBtn.disabled = false;
+    statusDiv.textContent = `Status: Recording ready (${response.duration}s) — download or play below`;
+  }
+});
 
 // Load API key on startup
 chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
@@ -122,6 +157,11 @@ chrome.runtime.onMessage.addListener((message) => {
     handleStopResponse(message.data);
   }
   
+  if (message.type === 'DOWNLOAD_RESPONSE') {
+    console.log('✅ Received download response:', message.data);
+    handleDownloadResponse(message.data);
+  }
+
   if (message.type === 'PLAYBACK_RESPONSE') {
     console.log('✅ Received playback response:', message.data);
     handlePlaybackResponse(message.data);
@@ -134,10 +174,9 @@ chrome.runtime.onMessage.addListener((message) => {
   
   if (message.type === 'TRANSCRIPTION_ERROR') {
     console.error('❌ Transcription error:', message.error);
-    statusDiv.innerHTML = `Status: Transcription error - ${message.error}`;
-    // Still show the section so user knows something is happening
+    statusDiv.textContent = `Status: Transcription error — ${message.error}`;
     transcriptionSection.classList.add('active');
-    transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color: red;">⚠️ Error: ${message.error}</div>`;
+    transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color:#ea4335;">Error: ${message.error}</div>`;
   }
   
   if (message.type === 'INSIGHTS_READY') {
@@ -158,25 +197,45 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'AI_SUMMARY_ERROR') {
     console.error('❌ AI summary error:', message.error);
     generateAISummaryBtn.disabled = false;
-    generateAISummaryBtn.textContent = 'Deep Analysis';
-    alert('Error generating AI summary: ' + message.error);
+    generateAISummaryBtn.textContent = 'Generate Deep Analysis';
+    deepContainer.innerHTML = `
+      <div class="deep-placeholder" style="color:#ea4335;">
+        <p>Error: ${message.error}</p>
+      </div>`;
+    switchTab('deep');
   }
 });
 
 function handleStopResponse(response) {
   isRecording = false;
-  
+
   if (response && response.success) {
-    statusDiv.innerHTML = `Status: Recording saved (${response.duration}s)`;
+    statusDiv.innerHTML = `Status: Recording saved — <strong>${response.duration}s</strong>. Ready to download or play.`;
     startBtn.disabled = false;
     downloadBtn.disabled = false;
     playBtn.disabled = false;
-    console.log('✅ Recording stopped successfully:', response);
   } else {
-    console.error('❌ Invalid response:', response);
-    statusDiv.innerHTML = "Status: Error - no valid response";
+    statusDiv.textContent = 'Status: Error stopping recording — try again';
     startBtn.disabled = false;
   }
+}
+
+function handleDownloadResponse(response) {
+  if (response && response.success && response.dataUrl) {
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = response.dataUrl;
+    a.download = `recording-${timestamp}.webm`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    const sizeMB = (response.size / 1024 / 1024).toFixed(2);
+    statusDiv.innerHTML = `Status: Download started (${sizeMB} MB)`;
+    console.log('Download initiated successfully');
+  } else {
+    statusDiv.innerHTML = `Status: ${response?.error || 'Download failed'}`;
+  }
+  downloadBtn.disabled = false;
 }
 
 startBtn.addEventListener('click', async () => {
@@ -233,7 +292,7 @@ stopBtn.addEventListener('click', async () => {
   if (!isRecording) return;
 
   console.log('Stop button clicked');
-  statusDiv.innerHTML = "Status: Stopping...";
+  statusDiv.textContent = 'Status: Stopping — generating insights...';
   stopBtn.disabled = true;
 
   // Send stop message - response will come via onMessage listener
@@ -258,24 +317,11 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
-downloadBtn.addEventListener('click', async () => {
+downloadBtn.addEventListener('click', () => {
   console.log('Download button clicked');
   statusDiv.innerHTML = "Status: Preparing download...";
   downloadBtn.disabled = true;
-
-  chrome.runtime.sendMessage(
-    { type: 'DOWNLOAD_RECORDING' },
-    (response) => {
-      if (response && response.success) {
-        const sizeMB = (response.size / 1024 / 1024).toFixed(2);
-        statusDiv.innerHTML = `Status: Download started (${sizeMB} MB)`;
-        console.log('Download initiated successfully');
-      } else {
-        statusDiv.innerHTML = `Status: ${response?.error || 'Download failed'}`;
-      }
-      downloadBtn.disabled = false;
-    }
-  );
+  chrome.runtime.sendMessage({ type: 'DOWNLOAD_RECORDING' });
 });
 
 playBtn.addEventListener('click', async () => {
@@ -287,7 +333,7 @@ playBtn.addEventListener('click', async () => {
     console.log('Sending GET_RECORDING_BLOB message...');
     chrome.runtime.sendMessage({ type: 'GET_RECORDING_BLOB' });
     console.log('✅ Playback message sent, waiting for response via onMessage...');
-    
+
     // Fallback timeout
     setTimeout(() => {
       if (!audioPlayer.src) {
@@ -296,7 +342,7 @@ playBtn.addEventListener('click', async () => {
         playBtn.disabled = false;
       }
     }, 5000);
-    
+
   } catch (err) {
     console.error('Exception in playback:', err);
     statusDiv.innerHTML = `Status: Exception - ${err.message}`;
@@ -306,12 +352,12 @@ playBtn.addEventListener('click', async () => {
 
 function handlePlaybackResponse(response) {
   console.log('Handling playback response:', response);
-  
+
   if (response && response.success && response.dataUrl) {
     console.log('Setting audio source, data URL length:', response.dataUrl.length);
     audioPlayer.src = response.dataUrl;
     audioPlayer.classList.add('active');
-    
+
     // Wait for audio to be loaded before playing
     audioPlayer.onloadeddata = () => {
       console.log('Audio loaded successfully, duration:', audioPlayer.duration);
@@ -327,7 +373,7 @@ function handlePlaybackResponse(response) {
           playBtn.disabled = false;
         });
     };
-    
+
     audioPlayer.onerror = (e) => {
       console.error('Audio element error:', e, audioPlayer.error);
       statusDiv.innerHTML = `Status: Audio error - ${audioPlayer.error?.message || 'Unknown error'}`;
@@ -420,47 +466,106 @@ function handleTranscription(data) {
   }
 }
 
+// ── Sales Coach renderer ─────────────────────────────────
+function renderSalesCoach(coach) {
+  if (!coach) return '';
+
+  const riskHtml = coach.riskFactors && coach.riskFactors.length > 0 ? `
+    <div class="coach-section">
+      <div class="coach-section-title">Risk Factors</div>
+      ${coach.riskFactors.map(r => `<div class="coach-bullet risk">- ${r}</div>`).join('')}
+    </div>` : '';
+
+  const oppHtml = coach.opportunities && coach.opportunities.length > 0 ? `
+    <div class="coach-section">
+      <div class="coach-section-title">Opportunities</div>
+      ${coach.opportunities.map(o => `<div class="coach-bullet opp">+ ${o}</div>`).join('')}
+    </div>` : '';
+
+  return `
+    <div class="sales-coach-card">
+      <div class="coach-header">Sales Coach</div>
+      <div class="intent-badge" style="color:${coach.intentColor}; border-color:${coach.intentColor}; background:${coach.intentColor}18;">
+        ${coach.intentLabel}
+      </div>
+      <div class="coach-next-action">
+        <div class="coach-label">Next Best Action</div>
+        ${coach.nextAction}
+      </div>
+      <div class="coach-tip">${coach.coachingTip}</div>
+      ${riskHtml}
+      ${oppHtml}
+    </div>
+  `;
+}
+
 // Display insights
 function displayInsights(insights) {
   console.log('📊 Displaying insights:', insights);
-  
-  // Show insights section
+
   insightsSection.classList.add('active');
-  
+  switchTab('insights');
+
   let html = '';
-  
+
+  // Sales Coach — always first
+  html += renderSalesCoach(insights.salesCoach);
+
+  // Latency display
+  if (typeof insights.latencyMs === 'number') {
+    html += `
+      <div class="insight-card" style="background:#f5f5f5; border-left:3px solid #607d8b;">
+        <div class="insight-label">Insight Latency</div>
+        <div class="insight-value" style="font-size:13px; color:#607d8b;">${insights.latencyMs} ms</div>
+      </div>
+    `;
+  }
+
   // Summary
   if (insights.summary) {
     html += `
       <div class="insight-card">
-        <div class="insight-label">Summary</div>
+        <div class="insight-label">Call Summary</div>
         <div class="insight-value">${insights.summary}</div>
       </div>
     `;
   }
-  
-  // Stats
-  if (insights.stats) {
+
+  // Customer questions
+  if (insights.customerQuestions && insights.customerQuestions.length > 0) {
     html += `
-      <div class="insight-card">
-        <div class="insight-label">Statistics</div>
-        <div class="stat-grid">
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.wordCount || 0}</div>
-            <div class="stat-label">Words</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.questions || 0}</div>
-            <div class="stat-label">Questions</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.segments || 0}</div>
-            <div class="stat-label">Segments</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.speakers || 'N/A'}</div>
-            <div class="stat-label">Speakers</div>
-          </div>
+      <div class="insight-card" style="border-left: 3px solid #4285f4;">
+        <div class="insight-label">
+          Questions Asked by Customer
+          <span class="card-count">${insights.customerQuestions.length}</span>
+        </div>
+        <div class="question-list">
+          ${insights.customerQuestions.map((q, i) => `
+            <div class="question-item">
+              <span class="question-num">Q${i + 1}</span>
+              <span>${q}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Customer doubts / concerns
+  if (insights.customerDoubts && insights.customerDoubts.length > 0) {
+    html += `
+      <div class="insight-card" style="background: #fff8f0; border-left: 3px solid #fb8c00;">
+        <div class="insight-label">
+          Doubts &amp; Concerns Raised
+          <span class="card-count" style="background:#fb8c00;">${insights.customerDoubts.length}</span>
+        </div>
+        <div class="doubt-list">
+          ${insights.customerDoubts.map(d => `
+            <div class="doubt-item">
+              <span class="doubt-icon">!</span>
+              <span>${d}</span>
+            </div>
+          `).join('')}
         </div>
       </div>
     `;
@@ -527,19 +632,22 @@ function displayInsights(insights) {
   // Action Items
   if (insights.actionItems && insights.actionItems.length > 0) {
     html += `
-      <div class="insight-card">
-        <div class="insight-label">Action Items (${insights.actionItems.length})</div>
+      <div class="insight-card" style="border-left: 3px solid #34a853;">
+        <div class="insight-label">
+          Action Items
+          <span class="card-count" style="background:#34a853;">${insights.actionItems.length}</span>
+        </div>
         <div class="action-list">
-          ${insights.actionItems.map(item => 
-            `<div class="action-item">${item}</div>`
+          ${insights.actionItems.map(item =>
+            `<div class="action-item"><span class="action-check">[ ]</span><span>${item}</span></div>`
           ).join('')}
         </div>
       </div>
     `;
   }
-  
+
   insightsContainer.innerHTML = html;
-  
+
   // Store transcript for AI analysis
   currentTranscriptText = insights.fullText || '';
   
@@ -549,214 +657,146 @@ function displayInsights(insights) {
   }, 100);
 }
 
-// Display AI-generated summary
+function renderMarkdown(text) {
+  return text
+    // Normalize line endings (OpenAI may return \r\n)
+    .replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+    // HTML-escape only the raw text characters
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    // Headings first (## and ###), before bold so ## **HEADING** works
+    .replace(/^#{3,} (.+)$/gm, '<div class="ai-sub-head">$1</div>')
+    .replace(/^## (.+)$/gm, '<div class="ai-section-head">$1</div>')
+    // Bold and italic
+    .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/__(.+?)__/g, '<strong>$1</strong>')
+    // Bullet lists (-, *, •)
+    .replace(/^[\-\*•] (.+)$/gm, '<div class="ai-bullet">• $1</div>')
+    // Numbered lists
+    .replace(/^\d+\. (.+)$/gm, (_, p) => `<div class="ai-numbered">${p}</div>`)
+    // Strip any remaining unmatched markdown symbols
+    .replace(/\*+/g, '').replace(/^#+\s*/gm, '').replace(/__/g, '')
+    // Newlines to breaks
+    .replace(/\n{2,}/g, '<br><br>')
+    .replace(/\n/g, '<br>');
+}
+
+// Display AI-generated summary in the Deep Analysis tab
 function displayAISummary(summary) {
   generateAISummaryBtn.disabled = false;
-  generateAISummaryBtn.textContent = 'Deep Analysis';
-  
-  const aiCard = document.createElement('div');
-  aiCard.className = 'insight-card';
-  aiCard.style.background = '#f0f8ff';
-  aiCard.style.border = '2px solid #4285f4';
-  aiCard.innerHTML = `
-    <div class="insight-label">AI-Powered Deep Analysis</div>
-    <div class="insight-value" style="white-space: pre-wrap; line-height: 1.4;">${summary}</div>
-  `;
-  
-  insightsContainer.insertBefore(aiCard, insightsContainer.firstChild);
-  
-  // Scroll to show the new summary
-  aiCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  generateAISummaryBtn.textContent = 'Regenerate';
+
+  deepContainer.innerHTML = `<div class="ai-summary-card">${renderMarkdown(summary)}</div>`;
+
+  switchTab('deep');
 }
 
 // Display live insights during recording
 function displayLiveInsights(insights) {
   if (!insights) return;
-  
+
   let html = '';
-  
-  // Live indicator
-  html += `
-    <div class="insight-card" style="background: #e8f5e9; border-left: 3px solid #4caf50;">
-      <div class="insight-label">Live Insights (Updating...)</div>
-      <div class="insight-value" style="font-size: 10px; color: #666;">Stats update as you speak</div>
-    </div>
-  `;
-  
-  // SALES-SPECIFIC INSIGHTS
-  if (insights.salesInsights) {
-    const si = insights.salesInsights;
-    
-    // Intent Score
+
+  // Sales Coach — always first
+  html += renderSalesCoach(insights.salesCoach);
+
+  // Latency
+  if (typeof insights.latencyMs === 'number') {
     html += `
-      <div class="insight-card" style="background: #fff8e1; border-left: 3px solid #ffc107;">
-        <div class="insight-label">Buyer Intent</div>
-        <div class="insight-value" style="font-weight: 600; color: #f57c00;">${si.intentScore}</div>
-      </div>
-    `;
-    
-    // Engagement Level
-    html += `
-      <div class="insight-card">
-        <div class="insight-label">Engagement Level</div>
-        <div class="insight-value" style="font-weight: 600; color: ${
-          si.engagementLevel === 'Very High' ? '#4caf50' :
-          si.engagementLevel === 'High' ? '#8bc34a' :
-          si.engagementLevel === 'Medium' ? '#ffc107' : '#ff9800'
-        };">${si.engagementLevel}</div>
-      </div>
-    `;
-    
-    // Emotional State
-    if (si.emotions && si.emotions.length > 0) {
-      html += `
-        <div class="insight-card">
-          <div class="insight-label">Prospect Feeling</div>
-          <div class="key-phrases">
-            ${si.emotions.map(emotion => 
-              `<span class="phrase-tag" style="background: #e3f2fd; color: #1976d2; border-color: #1976d2;">${emotion}</span>`
-            ).join('')}
-          </div>
-        </div>
-      `;
-    }
-    
-    // Buying Signals
-    if (si.buyingSignals && si.buyingSignals.length > 0) {
-      html += `
-        <div class="insight-card" style="background: #e8f5e9;">
-          <div class="insight-label">Buying Signals (${si.buyingSignals.length})</div>
-          <div class="action-list">
-            ${si.buyingSignals.map(({ text, signal }) => 
-              `<div class="action-item" style="background: #c8e6c9; border-left-color: #4caf50;">
-                <strong style="color: #2e7d32;">${signal}</strong><br>
-                <span style="font-size: 9px;">"${text}"</span>
-              </div>`
-            ).join('')}
-          </div>
-        </div>
-      `;
-    }
-    
-    // Objections
-    if (si.objections && si.objections.length > 0) {
-      html += `
-        <div class="insight-card" style="background: #ffebee;">
-          <div class="insight-label">Objections Detected (${si.objections.length})</div>
-          <div class="action-list">
-            ${si.objections.map(({ text, type }) => 
-              `<div class="action-item" style="background: #ffcdd2; border-left-color: #f44336;">
-                <strong style="color: #c62828;">${type}</strong><br>
-                <span style="font-size: 9px;">"${text}"</span>
-              </div>`
-            ).join('')}
-          </div>
-        </div>
-      `;
-    }
-    
-    // Pain Points
-    if (si.painPoints && si.painPoints.length > 0) {
-      html += `
-        <div class="insight-card" style="background: #fff3e0;">
-          <div class="insight-label">Pain Points Mentioned</div>
-          <div class="action-list">
-            ${si.painPoints.map(point => 
-              `<div class="action-item" style="background: #ffe0b2; border-left-color: #ff9800; font-size: 10px;">
-                "${point}"
-              </div>`
-            ).join('')}
-          </div>
-        </div>
-      `;
-    }
-  }
-  
-  // Stats
-  if (insights.stats) {
-    html += `
-      <div class="insight-card">
-        <div class="insight-label">Statistics</div>
-        <div class="stat-grid">
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.wordCount || 0}</div>
-            <div class="stat-label">Words</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.questions || 0}</div>
-            <div class="stat-label">Questions</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.segments || 0}</div>
-            <div class="stat-label">Segments</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number">${insights.stats.speakers || 'N/A'}</div>
-            <div class="stat-label">Speakers</div>
-          </div>
-        </div>
+      <div class="insight-card" style="background:#f5f5f5; border-left:3px solid #607d8b;">
+        <div class="insight-label">Insight Latency</div>
+        <div class="insight-value" style="font-size:13px; color:#607d8b;">${insights.latencyMs} ms</div>
       </div>
     `;
   }
   
+  // Customer Questions (live)
+  if (insights.customerQuestions && insights.customerQuestions.length > 0) {
+    html += `
+      <div class="insight-card" style="border-left: 3px solid #4285f4;">
+        <div class="insight-label">
+          Questions Asked So Far
+          <span class="card-count">${insights.customerQuestions.length}</span>
+        </div>
+        <div class="question-list">
+          ${insights.customerQuestions.map((q, i) => `
+            <div class="question-item">
+              <span class="question-num">Q${i + 1}</span>
+              <span>${q}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Customer Doubts (live)
+  if (insights.customerDoubts && insights.customerDoubts.length > 0) {
+    html += `
+      <div class="insight-card" style="background: #fff8f0; border-left: 3px solid #fb8c00;">
+        <div class="insight-label">
+          Doubts &amp; Concerns
+          <span class="card-count" style="background:#fb8c00;">${insights.customerDoubts.length}</span>
+        </div>
+        <div class="doubt-list">
+          ${insights.customerDoubts.map(d => `
+            <div class="doubt-item">
+              <span class="doubt-icon">!</span>
+              <span>${d}</span>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  }
+
   // Sentiment
   if (insights.sentiment && insights.sentiment.dominant) {
     const sentiment = insights.sentiment.dominant;
     const sentimentClass = `sentiment-${sentiment}`;
     const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
-    
+
     html += `
       <div class="insight-card">
         <div class="insight-label">Overall Sentiment</div>
         <div class="insight-value ${sentimentClass}">
           ${sentimentLabel}
         </div>
-        <div class="stat-grid" style="margin-top: 5px;">
-          <div class="stat-item">
-            <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
-            <div class="stat-label">Positive</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
-            <div class="stat-label">Neutral</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
-            <div class="stat-label">Negative</div>
-          </div>
-        </div>
       </div>
     `;
   }
-  
+
   // Key Phrases
   if (insights.keyPhrases && insights.keyPhrases.length > 0) {
     html += `
       <div class="insight-card">
         <div class="insight-label">Key Phrases</div>
         <div class="key-phrases">
-          ${insights.keyPhrases.map(phrase => 
+          ${insights.keyPhrases.map(phrase =>
             `<span class="phrase-tag">${phrase}</span>`
           ).join('')}
         </div>
       </div>
     `;
   }
-  
+
   // Action Items
   if (insights.actionItems && insights.actionItems.length > 0) {
     html += `
-      <div class="insight-card">
-        <div class="insight-label">Action Items (${insights.actionItems.length})</div>
+      <div class="insight-card" style="border-left: 3px solid #34a853;">
+        <div class="insight-label">
+          Action Items
+          <span class="card-count" style="background:#34a853;">${insights.actionItems.length}</span>
+        </div>
         <div class="action-list">
-          ${insights.actionItems.map(item => 
-            `<div class="action-item">${item}</div>`
+          ${insights.actionItems.map(item =>
+            `<div class="action-item"><span class="action-check">[ ]</span><span>${item}</span></div>`
           ).join('')}
         </div>
       </div>
     `;
   }
-  
+
   insightsContainer.innerHTML = html;
 }
 
@@ -773,13 +813,20 @@ audioPlayer.addEventListener('play', () => {
 // AI Summary button
 generateAISummaryBtn.addEventListener('click', () => {
   if (!currentTranscriptText) {
-    alert('No transcript available for analysis');
+    deepContainer.innerHTML = `
+      <div class="deep-placeholder">
+        <p>No transcript yet. Record a call and stop it first, then come back here.</p>
+      </div>`;
     return;
   }
-  
+
   generateAISummaryBtn.disabled = true;
   generateAISummaryBtn.textContent = 'Analyzing...';
-  
+  deepContainer.innerHTML = `
+    <div class="deep-placeholder" style="color:#4285f4;">
+      <p>Generating AI analysis — this may take a few seconds...</p>
+    </div>`;
+
   chrome.runtime.sendMessage({
     type: 'GENERATE_AI_SUMMARY',
     transcript: currentTranscriptText
