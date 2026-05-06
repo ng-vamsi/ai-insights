@@ -479,10 +479,18 @@ function generateLiveInsights() {
   const uniqueDoubts = [...new Set(doubtList)].slice(0, 8);
   const questions = uniqueQuestions.length;
 
-  // Sentiment analysis
+  // Sentiment analysis - track both counts and contributing lines
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
-  sentimentData.forEach(s => {
-    if (s) sentimentCounts[s] = (sentimentCounts[s] || 0) + 1;
+  const sentimentLines = { positive: [], neutral: [], negative: [] };
+  
+  fullTranscript.forEach(t => {
+    const sentiment = t.sentiment || 'neutral';
+    if (sentiment && sentimentCounts.hasOwnProperty(sentiment)) {
+      sentimentCounts[sentiment]++;
+      if (t.text && t.text.trim()) {
+        sentimentLines[sentiment].push(t.text);
+      }
+    }
   });
   
   const dominantSentiment = Object.entries(sentimentCounts)
@@ -585,22 +593,27 @@ function generateLiveInsights() {
     });
   });
   
-  // Extract key phrases (words that appear multiple times)
-  const words = fullText.toLowerCase()
-    .replace(/[.,?!]/g, '')
-    .split(/\s+/)
-    .filter(w => w.length > 4);
+  // Extract key phrases (2-3 word phrases that appear multiple times)
+  const phraseRegex = /\b[a-z]{4,}(?:\s+[a-z]{4,}){1,2}\b/gi;
+  const phraseCounts = {};
   
-  const wordFreq = {};
-  words.forEach(w => {
-    wordFreq[w] = (wordFreq[w] || 0) + 1;
+  fullTranscript.forEach(t => {
+    const matches = t.text.match(phraseRegex) || [];
+    matches.forEach(phrase => {
+      const normalized = phrase.toLowerCase().trim();
+      if (normalized.length > 5) {
+        phraseCounts[normalized] = (phraseCounts[normalized] || 0) + 1;
+      }
+    });
   });
   
-  const keyPhrases = Object.entries(wordFreq)
-    .filter(([_, count]) => count > 1)
+  // Filter common words/phrases that aren't meaningful
+  const stopPhrases = ['and the', 'in the', 'of the', 'for the', 'to the', 'that is', 'i think'];
+  const keyPhrases = Object.entries(phraseCounts)
+    .filter(([phrase, count]) => count > 1 && !stopPhrases.includes(phrase))
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([word]) => word);
+    .map(([phrase]) => phrase);
   
   // Detect action items
   const actionVerbs = ['need', 'should', 'must', 'will', 'going to', 'have to', 'plan', 'schedule'];
@@ -630,7 +643,8 @@ function generateLiveInsights() {
     },
     sentiment: {
       dominant: dominantSentiment,
-      breakdown: sentimentCounts
+      breakdown: sentimentCounts,
+      lines: sentimentLines
     },
     // SALES-SPECIFIC INSIGHTS
     salesInsights: {
@@ -645,8 +659,7 @@ function generateLiveInsights() {
     actionItems: actionItems.length > 0 ? actionItems : [],
     topics: [...new Set(detectedTopics)].slice(0, 5),
     customerQuestions: uniqueQuestions,
-    customerDoubts: uniqueDoubts,
-    salesCoach: generateSalesCoachInsights(fullText)
+    customerDoubts: uniqueDoubts
   };
 }
 
@@ -705,31 +718,44 @@ function generateInsights() {
 
   const questions = questionList.length;
   
-  // Sentiment analysis
+  // Sentiment analysis - track both counts and contributing lines
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
-  sentimentData.forEach(s => {
-    if (s) sentimentCounts[s] = (sentimentCounts[s] || 0) + 1;
+  const sentimentLines = { positive: [], neutral: [], negative: [] };
+  
+  fullTranscript.forEach(t => {
+    const sentiment = t.sentiment || 'neutral';
+    if (sentiment && sentimentCounts.hasOwnProperty(sentiment)) {
+      sentimentCounts[sentiment]++;
+      if (t.text && t.text.trim()) {
+        sentimentLines[sentiment].push(t.text);
+      }
+    }
   });
   
   const dominantSentiment = Object.entries(sentimentCounts)
     .sort((a, b) => b[1] - a[1])[0]?.[0] || 'neutral';
   
-  // Extract key phrases (words that appear multiple times)
-  const words = fullText.toLowerCase()
-    .replace(/[.,?!]/g, '')
-    .split(/\s+/)
-    .filter(w => w.length > 4); // Only words longer than 4 chars
+  // Extract key phrases (2-3 word phrases that appear multiple times)
+  const phraseRegex = /\b[a-z]{4,}(?:\s+[a-z]{4,}){1,2}\b/gi;
+  const phraseCounts = {};
   
-  const wordFreq = {};
-  words.forEach(w => {
-    wordFreq[w] = (wordFreq[w] || 0) + 1;
+  fullTranscript.forEach(t => {
+    const matches = t.text.match(phraseRegex) || [];
+    matches.forEach(phrase => {
+      const normalized = phrase.toLowerCase().trim();
+      if (normalized.length > 5) {
+        phraseCounts[normalized] = (phraseCounts[normalized] || 0) + 1;
+      }
+    });
   });
   
-  const keyPhrases = Object.entries(wordFreq)
-    .filter(([_, count]) => count > 2)
+  // Filter common words/phrases that aren't meaningful
+  const stopPhrases = ['and the', 'in the', 'of the', 'for the', 'to the', 'that is', 'i think'];
+  const keyPhrases = Object.entries(phraseCounts)
+    .filter(([phrase, count]) => count > 1 && !stopPhrases.includes(phrase))
     .sort((a, b) => b[1] - a[1])
     .slice(0, 5)
-    .map(([word]) => word);
+    .map(([phrase]) => phrase);
   
   // Detect action items (statements with action verbs)
   const actionVerbs = ['need', 'should', 'must', 'will', 'going to', 'have to', 'plan', 'schedule', 'follow up', 'book', 'send', 'review'];
@@ -773,15 +799,15 @@ function generateInsights() {
     },
     sentiment: {
       dominant: dominantSentiment,
-      breakdown: sentimentCounts
+      breakdown: sentimentCounts,
+      lines: sentimentLines
     },
     topics: [...new Set(detectedTopics)].slice(0, 5),
     keyPhrases,
     actionItems,
     customerQuestions: uniqueQuestions,
     customerDoubts: uniqueDoubts,
-    speakerStats: speakers,
-    salesCoach: generateSalesCoachInsights(fullText)
+    speakerStats: speakers
   };
 }
 

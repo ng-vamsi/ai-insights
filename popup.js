@@ -499,39 +499,6 @@ function handleTranscription(data) {
   }
 }
 
-// ── Sales Coach renderer ─────────────────────────────────
-function renderSalesCoach(coach) {
-  if (!coach) return '';
-
-  const riskHtml = coach.riskFactors && coach.riskFactors.length > 0 ? `
-    <div class="coach-section">
-      <div class="coach-section-title">Risk Factors</div>
-      ${coach.riskFactors.map(r => `<div class="coach-bullet risk">- ${r}</div>`).join('')}
-    </div>` : '';
-
-  const oppHtml = coach.opportunities && coach.opportunities.length > 0 ? `
-    <div class="coach-section">
-      <div class="coach-section-title">Opportunities</div>
-      ${coach.opportunities.map(o => `<div class="coach-bullet opp">+ ${o}</div>`).join('')}
-    </div>` : '';
-
-  return `
-    <div class="sales-coach-card">
-      <div class="coach-header">Sales Coach</div>
-      <div class="intent-badge" style="color:${coach.intentColor}; border-color:${coach.intentColor}; background:${coach.intentColor}18;">
-        ${coach.intentLabel}
-      </div>
-      <div class="coach-next-action">
-        <div class="coach-label">Next Best Action</div>
-        ${coach.nextAction}
-      </div>
-      <div class="coach-tip">${coach.coachingTip}</div>
-      ${riskHtml}
-      ${oppHtml}
-    </div>
-  `;
-}
-
 // Display insights
 function displayInsights(insights) {
   console.log('📊 Displaying insights:', insights);
@@ -540,9 +507,6 @@ function displayInsights(insights) {
   switchTab('insights');
 
   let html = '';
-
-  // Sales Coach — always first
-  html += renderSalesCoach(insights.salesCoach);
 
   // Latency display
   if (typeof insights.latencyMs === 'number') {
@@ -604,19 +568,20 @@ function displayInsights(insights) {
     `;
   }
   
-  // Sentiment
+  // Sentiment with contributing lines
   if (insights.sentiment && insights.sentiment.dominant) {
     const sentiment = insights.sentiment.dominant;
     const sentimentClass = `sentiment-${sentiment}`;
     const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
+    const lines = insights.sentiment.lines || {};
     
-    html += `
+    let sentimentHtml = `
       <div class="insight-card">
         <div class="insight-label">Overall Sentiment</div>
         <div class="insight-value ${sentimentClass}">
           ${sentimentLabel}
         </div>
-        <div class="stat-grid" style="margin-top: 5px;">
+        <div class="stat-grid" style="margin-top: 10px;">
           <div class="stat-item">
             <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
             <div class="stat-label">Positive</div>
@@ -630,8 +595,37 @@ function displayInsights(insights) {
             <div class="stat-label">Negative</div>
           </div>
         </div>
-      </div>
     `;
+    
+    // Add contributing lines for each sentiment
+    if (lines.positive && lines.positive.length > 0) {
+      sentimentHtml += `
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">✓ Positive Lines:</div>
+          ${lines.positive.slice(0, 2).map(line => `
+            <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
+              "${line}"
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
+    if (lines.negative && lines.negative.length > 0) {
+      sentimentHtml += `
+        <div style="margin-top: 8px;">
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">✗ Negative Lines:</div>
+          ${lines.negative.slice(0, 2).map(line => `
+            <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
+              "${line}"
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
+    sentimentHtml += `</div>`;
+    html += sentimentHtml;
   }
   
   // Key Phrases
@@ -730,9 +724,6 @@ function displayLiveInsights(insights) {
 
   let html = '';
 
-  // Sales Coach — always first
-  html += renderSalesCoach(insights.salesCoach);
-
   // Latency
   if (typeof insights.latencyMs === 'number') {
     html += `
@@ -783,20 +774,64 @@ function displayLiveInsights(insights) {
     `;
   }
 
-  // Sentiment
+  // Sentiment with contributing lines
   if (insights.sentiment && insights.sentiment.dominant) {
     const sentiment = insights.sentiment.dominant;
     const sentimentClass = `sentiment-${sentiment}`;
     const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
+    const lines = insights.sentiment.lines || {};
 
-    html += `
+    let sentimentHtml = `
       <div class="insight-card">
         <div class="insight-label">Overall Sentiment</div>
         <div class="insight-value ${sentimentClass}">
           ${sentimentLabel}
         </div>
-      </div>
+        <div class="stat-grid" style="margin-top: 10px;">
+          <div class="stat-item">
+            <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
+            <div class="stat-label">Positive</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
+            <div class="stat-label">Neutral</div>
+          </div>
+          <div class="stat-item">
+            <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
+            <div class="stat-label">Negative</div>
+          </div>
+        </div>
     `;
+    
+    // Add contributing lines for each sentiment
+    if (lines.positive && lines.positive.length > 0) {
+      sentimentHtml += `
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">✓ Positive Lines:</div>
+          ${lines.positive.slice(0, 2).map(line => `
+            <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
+              "${line}"
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
+    if (lines.negative && lines.negative.length > 0) {
+      sentimentHtml += `
+        <div style="margin-top: 8px;">
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">✗ Negative Lines:</div>
+          ${lines.negative.slice(0, 2).map(line => `
+            <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
+              "${line}"
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+    
+    sentimentHtml += `</div>`;
+    html += sentimentHtml;
   }
 
   // Key Phrases
