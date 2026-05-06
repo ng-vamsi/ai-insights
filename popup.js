@@ -185,6 +185,11 @@ chrome.runtime.onMessage.addListener((message) => {
     statusDiv.textContent = `Status: Transcription error — ${message.error}`;
     transcriptionSection.classList.add('active');
     transcriptContainer.innerHTML = `<div class="transcript-item" style="border-left-color:#ea4335;">Error: ${message.error}</div>`;
+    // Scroll to ensure error is visible
+    const errorItem = transcriptContainer.firstElementChild;
+    if (errorItem) {
+      errorItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    }
   }
   
   if (message.type === 'INSIGHTS_READY') {
@@ -476,8 +481,8 @@ function handleTranscription(data) {
     `;
     transcriptContainer.appendChild(item);
     
-    // Auto-scroll to bottom
-    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+    // Scroll the new item into view - this is more reliable than scrollTop
+    item.scrollIntoView({ behavior: 'auto', block: 'nearest' });
   } else {
     console.log('📝 Interim transcript:', transcript);
     // Update or create interim transcript
@@ -492,10 +497,16 @@ function handleTranscription(data) {
         <span class="transcript-text">${transcript}</span>
       `;
       transcriptContainer.appendChild(item);
+      
+      // Scroll the new item into view
+      item.scrollIntoView({ behavior: 'auto', block: 'nearest' });
     }
     
-    // Auto-scroll to bottom
-    transcriptContainer.scrollTop = transcriptContainer.scrollHeight;
+    // For interim updates, also scroll to ensure latest is visible
+    const lastItem = transcriptContainer.lastElementChild;
+    if (lastItem && !is_final) {
+      lastItem.scrollIntoView({ behavior: 'auto', block: 'nearest' });
+    }
   }
 }
 
@@ -601,7 +612,7 @@ function displayInsights(insights) {
     if (lines.positive && lines.positive.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
-          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">✓ Positive Lines:</div>
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines:</div>
           ${lines.positive.slice(0, 2).map(line => `
             <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
               "${line}"
@@ -614,7 +625,7 @@ function displayInsights(insights) {
     if (lines.negative && lines.negative.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 8px;">
-          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">✗ Negative Lines:</div>
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines:</div>
           ${lines.negative.slice(0, 2).map(line => `
             <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
               "${line}"
@@ -807,7 +818,7 @@ function displayLiveInsights(insights) {
     if (lines.positive && lines.positive.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
-          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">✓ Positive Lines:</div>
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines:</div>
           ${lines.positive.slice(0, 2).map(line => `
             <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
               "${line}"
@@ -820,7 +831,7 @@ function displayLiveInsights(insights) {
     if (lines.negative && lines.negative.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 8px;">
-          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">✗ Negative Lines:</div>
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines:</div>
           ${lines.negative.slice(0, 2).map(line => `
             <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
               "${line}"
