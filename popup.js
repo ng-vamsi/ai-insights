@@ -39,6 +39,7 @@ tabDeep.addEventListener('click',     () => switchTab('deep'));
 let isRecording = false;
 let deepgramApiKey = null;
 let currentTranscriptText = '';
+let apiKeysLoaded = false; // Track if storage has been loaded
 
 // ── Restore UI state when popup reopens ─────────────────
 chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
@@ -59,14 +60,17 @@ chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
   }
 });
 
-// Load API key on startup
+// Load API key on startup (MUST complete before recording can start)
 chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
   if (result.deepgramApiKey) {
     deepgramApiKey = result.deepgramApiKey;
+    console.log('✅ Deepgram API key loaded from storage, length:', deepgramApiKey.length);
     apiKeyInput.value = '••••••••••••';
     apiKeyInput.disabled = true;
     apiKeySection.classList.add('configured');
     saveApiKeyBtn.textContent = 'Change';
+  } else {
+    console.warn('⚠️ No Deepgram API key found in storage');
   }
   
   if (result.openaiApiKey) {
@@ -74,6 +78,10 @@ chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
     openaiKeyInput.disabled = true;
     saveOpenaiKeyBtn.textContent = 'Change';
   }
+  
+  // Mark that API keys have been loaded
+  apiKeysLoaded = true;
+  console.log('✅ API keys loading complete');
 });
 
 // Save API key
@@ -245,10 +253,33 @@ startBtn.addEventListener('click', async () => {
     return;
   }
   
-  // Check if API key is configured
-  if (!deepgramApiKey) {
-    statusDiv.innerHTML = "Status: Please configure Deepgram API key first";
+  // Wait for API keys to load from storage (max 2 seconds)
+  if (!apiKeysLoaded) {
+    console.log('⏳ Waiting for API keys to load from storage...');
+    statusDiv.innerHTML = "Status: Loading API keys...";
+    startBtn.disabled = true;
+    
+    // Wait up to 2 seconds for API keys to load
+    let waited = 0;
+    while (!apiKeysLoaded && waited < 2000) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      waited += 100;
+    }
+    
+    if (!apiKeysLoaded) {
+      console.error('❌ API keys failed to load from storage');
+      statusDiv.innerHTML = "Status: Failed to load API keys";
+      startBtn.disabled = false;
+      return;
+    }
+  }
+  
+  // Check if API key is actually configured
+  if (!deepgramApiKey || deepgramApiKey.length < 20) {
+    statusDiv.innerHTML = "Status: Please configure a valid Deepgram API key first";
+    console.error('❌ Invalid API key. Length:', deepgramApiKey?.length || 0);
     apiKeyInput.focus();
+    startBtn.disabled = false;
     return;
   }
 
@@ -257,6 +288,7 @@ startBtn.addEventListener('click', async () => {
 
   if (!tab) {
     statusDiv.textContent = "Error: No active tab found.";
+    startBtn.disabled = false;
     return;
   }
 
@@ -279,6 +311,7 @@ startBtn.addEventListener('click', async () => {
   audioPlayer.src = '';
 
   // 3. Send message to background.js with API key
+  console.log('📤 Sending INIT_RECORDING with API key length:', deepgramApiKey.length);
   chrome.runtime.sendMessage({ 
     type: 'INIT_RECORDING', 
     tabId: tab.id,

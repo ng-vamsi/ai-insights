@@ -93,10 +93,32 @@ async function handleInitRecording(tabId) {
   console.log('📝 Recording state initialized');
 
   // Initialize Deepgram connection if API key is available
-  if (deepgramApiKey) {
+  if (deepgramApiKey && deepgramApiKey.length > 0) {
+    console.log('✅ API key available, length:', deepgramApiKey.length);
+    console.log('🔑 API key preview:', deepgramApiKey.substring(0, 5) + '...');
+    
+    // Validate API key format (should be reasonably long)
+    if (deepgramApiKey.length < 30) {
+      console.error('❌ WARNING: API key seems too short (length ' + deepgramApiKey.length + ', expected 30+)');
+      console.error('   This might indicate an invalid API key. Try creating a new one from Deepgram console.');
+    }
+    
+    // Check for common invalid formats
+    if (deepgramApiKey.includes(' ')) {
+      console.error('❌ ERROR: API key contains spaces! This is invalid. Please check your key.');
+    }
+    if (deepgramApiKey.includes('\n') || deepgramApiKey.includes('\t')) {
+      console.error('❌ ERROR: API key contains whitespace characters! Please check your key.');
+    }
+    
     initDeepgramConnection();
   } else {
+    console.error('❌ API key missing or empty!');
     console.warn('⚠️ No Deepgram API key - transcription disabled');
+    chrome.runtime.sendMessage({
+      type: 'TRANSCRIPTION_ERROR',
+      error: 'Deepgram API key not configured in background.js'
+    }).catch(() => {});
   }
 
   // 1. Get the stream ID for the specific tab
@@ -144,22 +166,17 @@ function initDeepgramConnection() {
   
   try {
     // Deepgram WebSocket URL with parameters
-    // Don't specify encoding - let Deepgram auto-detect the WebM format
+    // Using 'opus' encoding to match our MediaRecorder format
     const deepgramUrl = `wss://api.deepgram.com/v1/listen?` + new URLSearchParams({
       model: 'nova-2',
       language: 'en',
       punctuate: 'true',
       interim_results: 'true',
-      smart_format: 'true',
-      // Don't specify encoding - Deepgram will auto-detect WebM/Opus
-      // sentiment: 'true',  // Note: sentiment might not be available in your plan
-      // detect_topics: 'true',  // Note: topics might not be available in your plan
-      // intents: 'true',  // Note: intents might not be available in your plan
-      diarize: 'true'
+      encoding: 'opus',
+      channels: '1'
     }).toString();
     
     console.log('🔗 Connecting to:', deepgramUrl);
-    console.log('🔑 API Key length:', deepgramApiKey?.length);
     deepgramSocket = new WebSocket(deepgramUrl, ['token', deepgramApiKey]);
     
     deepgramSocket.onopen = () => {
@@ -261,8 +278,6 @@ function initDeepgramConnection() {
     
     deepgramSocket.onerror = (error) => {
       console.error('❌ Deepgram WebSocket error:', error);
-      console.error('❌ Socket readyState:', deepgramSocket?.readyState);
-      console.error('❌ Socket url:', deepgramSocket?.url);
       deepgramConnected = false;
       
       chrome.runtime.sendMessage({
@@ -274,11 +289,9 @@ function initDeepgramConnection() {
     deepgramSocket.onclose = (event) => {
       console.log('🔌 Deepgram WebSocket closed');
       console.log('Close code:', event.code, 'Reason:', event.reason);
-      console.log('Was clean:', event.wasClean);
       deepgramConnected = false;
       
       if (event.code !== 1000 && event.code !== 1005) {
-        // Not a normal close
         chrome.runtime.sendMessage({
           type: 'TRANSCRIPTION_ERROR',
           error: `Connection closed: ${event.reason || 'Code ' + event.code}`
