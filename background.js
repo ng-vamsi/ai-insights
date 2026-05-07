@@ -452,9 +452,48 @@ function generateLiveInsights() {
   const questionList = [];
   const doubtList = [];
   const doubtPatterns = [
-    /concern/i, /worried/i, /not sure/i, /unclear/i, /what if/i,
+    // Explicit concerns and worries
+    /concern/i, /worried/i, /worry/i, /concern(ed)?/i, /hesita/i,
+    /not sure/i, /unsure/i, /unclear/i, /confusing/i, /confused/i,
+    /what if/i, /what about/i, /what happens/i,
+    
+    // Questions about functionality and compatibility
     /does .* (mean|work|matter)/i, /is there/i, /can .* be/i,
-    /could .* be/i, /if .* then/i, /why .* not/i, /how .* work/i
+    /could .* be/i, /if .* then/i, /why .* not/i, /how .* work/i,
+    /how long/i, /how much/i, /how many/i, /when will/i, /when can/i,
+    
+    // Potential objections and risks
+    /risk/i, /problem/i, /issue/i, /challenge/i, /difficult/i,
+    /complicated/i, /complex/i, /concern(ing)?/i, /worried about/i,
+    /concerned about/i, /hesitant/i, /unsure about/i, /not convinced/i,
+    
+    // Compatibility and integration concerns
+    /compatible/i, /integration/i, /integrate with/i, /work with/i,
+    /support/i, /supported/i, /will it (work|fit|integrate)/i,
+    
+    // Performance and implementation concerns
+    /will it slow|speed|performance|slow down/i, /downtime/i, /impact/i,
+    /affect our/i, /break/i, /break anything/i, /conflict/i,
+    
+    // Cost and ROI concerns
+    /expensive/i, /cost/i, /price/i, /afford/i, /budget/i, /worth it/i,
+    /investment/i, /return/i, /roi/i, /value/i,
+    
+    // Timeline and implementation concerns
+    /how long will it take/i, /timeline/i, /deadline/i, /rush/i,
+    /too fast|quick/i, /enough time/i, /ready/i, /prepared/i,
+    
+    // Alternative solutions and competitors
+    /alternative/i, /other options?/i, /competitors?/i, /versus/i,
+    /compared to/i, /similar to/i, /instead of/i, /better than/i,
+    
+    // Training and adoption concerns
+    /learn/i, /training/i, /complicated to use/i, /user friendly/i,
+    /easy to use/i, /adoption/i, /understand/i, /learning curve/i,
+    
+    // Data and security concerns
+    /secure/i, /security/i, /safe/i, /data/i, /privacy/i, /compliance/i,
+    /confidential/i, /encrypt/i, /protect/i, /backup/i, /loss/i
   ];
 
   fullTranscript.forEach(t => {
@@ -684,18 +723,48 @@ function generateInsights() {
   const questionList = [];
   const doubtList = [];
   const doubtPatterns = [
-    /concern/i,
-    /worried/i,
-    /not sure/i,
-    /unclear/i,
-    /what if/i,
-    /does .* (mean|work|matter)/i,
-    /is there/i,
-    /can .* be/i,
-    /could .* be/i,
-    /if .* then/i,
-    /why .* not/i,
-    /how .* work/i
+    // Explicit concerns and worries
+    /concern/i, /worried/i, /worry/i, /concern(ed)?/i, /hesita/i,
+    /not sure/i, /unsure/i, /unclear/i, /confusing/i, /confused/i,
+    /what if/i, /what about/i, /what happens/i,
+    
+    // Questions about functionality and compatibility
+    /does .* (mean|work|matter)/i, /is there/i, /can .* be/i,
+    /could .* be/i, /if .* then/i, /why .* not/i, /how .* work/i,
+    /how long/i, /how much/i, /how many/i, /when will/i, /when can/i,
+    
+    // Potential objections and risks
+    /risk/i, /problem/i, /issue/i, /challenge/i, /difficult/i,
+    /complicated/i, /complex/i, /concern(ing)?/i, /worried about/i,
+    /concerned about/i, /hesitant/i, /unsure about/i, /not convinced/i,
+    
+    // Compatibility and integration concerns
+    /compatible/i, /integration/i, /integrate with/i, /work with/i,
+    /support/i, /supported/i, /will it (work|fit|integrate)/i,
+    
+    // Performance and implementation concerns
+    /will it slow|speed|performance|slow down/i, /downtime/i, /impact/i,
+    /affect our/i, /break/i, /break anything/i, /conflict/i,
+    
+    // Cost and ROI concerns
+    /expensive/i, /cost/i, /price/i, /afford/i, /budget/i, /worth it/i,
+    /investment/i, /return/i, /roi/i, /value/i,
+    
+    // Timeline and implementation concerns
+    /how long will it take/i, /timeline/i, /deadline/i, /rush/i,
+    /too fast|quick/i, /enough time/i, /ready/i, /prepared/i,
+    
+    // Alternative solutions and competitors
+    /alternative/i, /other options?/i, /competitors?/i, /versus/i,
+    /compared to/i, /similar to/i, /instead of/i, /better than/i,
+    
+    // Training and adoption concerns
+    /learn/i, /training/i, /complicated to use/i, /user friendly/i,
+    /easy to use/i, /adoption/i, /understand/i, /learning curve/i,
+    
+    // Data and security concerns
+    /secure/i, /security/i, /safe/i, /data/i, /privacy/i, /compliance/i,
+    /confidential/i, /encrypt/i, /protect/i, /backup/i, /loss/i
   ];
 
   fullTranscript.forEach(t => {

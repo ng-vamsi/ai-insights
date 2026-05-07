@@ -603,8 +603,8 @@ function displayInsights(insights) {
     if (lines.positive && lines.positive.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
-          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines:</div>
-          ${lines.positive.slice(0, 2).map(line => `
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines (${lines.positive.length}):</div>
+          ${lines.positive.map(line => `
             <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
               "${line}"
             </div>
@@ -616,8 +616,8 @@ function displayInsights(insights) {
     if (lines.negative && lines.negative.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 8px;">
-          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines:</div>
-          ${lines.negative.slice(0, 2).map(line => `
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines (${lines.negative.length}):</div>
+          ${lines.negative.map(line => `
             <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
               "${line}"
             </div>
@@ -804,8 +804,8 @@ function displayLiveInsights(insights) {
     if (lines.positive && lines.positive.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
-          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines:</div>
-          ${lines.positive.slice(0, 2).map(line => `
+          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines (${lines.positive.length}):</div>
+          ${lines.positive.map(line => `
             <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
               "${line}"
             </div>
@@ -817,8 +817,8 @@ function displayLiveInsights(insights) {
     if (lines.negative && lines.negative.length > 0) {
       sentimentHtml += `
         <div style="margin-top: 8px;">
-          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines:</div>
-          ${lines.negative.slice(0, 2).map(line => `
+          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines (${lines.negative.length}):</div>
+          ${lines.negative.map(line => `
             <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
               "${line}"
             </div>
