@@ -311,36 +311,32 @@ function initDeepgramConnection() {
 function handleAudioChunk(payload) {
   const { data, size, mimeType } = payload;
   
-  console.log('🎵 Received audio chunk from offscreen');
-  console.log('📊 Audio chunk details - Size:', size, 'bytes, Type:', mimeType);
-  console.log('📦 Array length:', data.length, 'bytes');
-  
   // Convert Array back to Uint8Array, then to Blob
   const uint8Array = new Uint8Array(data);
   const audioBlob = new Blob([uint8Array], { type: mimeType });
-  console.log('✅ Converted to Blob:', audioBlob, 'Actual size:', audioBlob.size);
+  
+  if (audioBlob.size === 0) {
+    console.warn('⚠️ Received empty audio blob from offscreen');
+    return;
+  }
   
   // Store the audio chunk
   if (isRecording) {
     audioChunks.push(audioBlob);
     const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
-    console.log('💾 Stored chunk #' + audioChunks.length + ' | Duration:', duration + 's | Total chunks:', audioChunks.length);
+    console.log('💾 Audio chunk stored - Total:', audioChunks.length, 'chunks,', audioChunks.reduce((sum, chunk) => sum + chunk.size, 0), 'bytes');
     
     // Send to Deepgram if connected
     if (deepgramConnected && deepgramSocket && deepgramSocket.readyState === WebSocket.OPEN) {
       try {
-        // Send WebM/Opus audio directly to Deepgram
         audioBlob.arrayBuffer().then(buffer => {
           deepgramSocket.send(buffer);
-          console.log('📤 Sent audio to Deepgram:', buffer.byteLength, 'bytes, Format: audio/webm;codecs=opus');
         }).catch(err => {
-          console.error('❌ Error converting audio to buffer:', err);
+          console.error('❌ Error converting audio to buffer:', err.message);
         });
       } catch (err) {
-        console.error('❌ Error sending to Deepgram:', err);
+        console.error('❌ Error sending to Deepgram:', err.message);
       }
-    } else {
-      console.warn('⚠️ Not sending to Deepgram - Connected:', deepgramConnected, 'Socket state:', deepgramSocket?.readyState);
     }
     
     // Update popup with recording stats
@@ -354,6 +350,8 @@ function handleAudioChunk(payload) {
     }).catch(() => {
       // Popup might be closed, that's ok
     });
+  } else {
+    console.warn('⚠️ Received audio chunk but recording is not active - chunk not stored');
   }
 }
 
@@ -1148,34 +1146,44 @@ function handleDownloadRecording() {
   console.log('💾 Download requested - Combining', audioChunks.length, 'chunks');
 
   const sendDownloadResponse = (data) => {
-    console.log('📤 Sending DOWNLOAD_RESPONSE:', data);
     chrome.runtime.sendMessage({ type: 'DOWNLOAD_RESPONSE', data }).catch(err => {
       console.error('Failed to send download response:', err);
     });
   };
 
   if (audioChunks.length === 0) {
-    console.warn('⚠️ No audio chunks recorded');
-    sendDownloadResponse({ success: false, error: 'No audio chunks recorded' });
+    console.error('❌ CRITICAL: No audio chunks recorded - offscreen document may not have sent audio');
+    sendDownloadResponse({ success: false, error: 'No audio chunks recorded. Check browser console for details.' });
     return;
   }
 
   try {
     const finalBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
     console.log('✅ Combined blob size:', finalBlob.size, 'bytes');
+    
+    if (finalBlob.size === 0) {
+      console.error('❌ Blob is empty - audio chunks have no data');
+      sendDownloadResponse({ success: false, error: 'Audio data is empty' });
+      return;
+    }
 
     const reader = new FileReader();
     reader.onloadend = () => {
-      console.log('✅ Data URL ready, length:', reader.result.length);
-      sendDownloadResponse({ success: true, dataUrl: reader.result, size: finalBlob.size });
+      if (reader.result) {
+        console.log('✅ Data URL ready, length:', reader.result.length);
+        sendDownloadResponse({ success: true, dataUrl: reader.result, size: finalBlob.size });
+      } else {
+        console.error('❌ FileReader produced no result');
+        sendDownloadResponse({ success: false, error: 'FileReader failed' });
+      }
     };
     reader.onerror = (error) => {
-      console.error('❌ FileReader error:', error);
-      sendDownloadResponse({ success: false, error: 'Failed to read audio data' });
+      console.error('❌ FileReader error:', reader.error?.message);
+      sendDownloadResponse({ success: false, error: `FileReader error: ${reader.error?.message}` });
     };
     reader.readAsDataURL(finalBlob);
   } catch (err) {
-    console.error('❌ Exception in handleDownloadRecording:', err);
+    console.error('❌ Exception in handleDownloadRecording:', err.message);
     sendDownloadResponse({ success: false, error: err.message });
   }
 }
@@ -1184,7 +1192,6 @@ function handleGetRecordingBlob() {
   console.log('🎧 Playback requested');
 
   const sendPlaybackResponse = (data) => {
-    console.log('📤 Sending PLAYBACK_RESPONSE:', data.success ? `success (${data.dataUrl?.length || 0} bytes)` : data.error);
     chrome.runtime.sendMessage({
       type: 'PLAYBACK_RESPONSE',
       data: data
@@ -1194,8 +1201,8 @@ function handleGetRecordingBlob() {
   };
 
   if (audioChunks.length === 0) {
-    console.warn('⚠️ No audio chunks available for playback');
-    sendPlaybackResponse({ success: false, error: 'No audio chunks recorded' });
+    console.error('❌ CRITICAL: No audio chunks available for playback - offscreen document may not have sent audio');
+    sendPlaybackResponse({ success: false, error: 'No audio chunks recorded. Check browser console for details.' });
     return;
   }
 
@@ -1203,23 +1210,32 @@ function handleGetRecordingBlob() {
     console.log('📦 Creating final blob from', audioChunks.length, 'chunks');
     const finalBlob = new Blob(audioChunks, { type: 'audio/webm;codecs=opus' });
     console.log('✅ Final blob created, size:', finalBlob.size, 'bytes');
+    
+    if (finalBlob.size === 0) {
+      console.error('❌ Blob is empty - audio chunks have no data');
+      sendPlaybackResponse({ success: false, error: 'Audio data is empty' });
+      return;
+    }
 
     const reader = new FileReader();
-
     reader.onloadend = () => {
-      console.log('✅ Data URL created, length:', reader.result.length);
-      sendPlaybackResponse({ success: true, dataUrl: reader.result });
+      if (reader.result) {
+        console.log('✅ Data URL created, length:', reader.result.length);
+        sendPlaybackResponse({ success: true, dataUrl: reader.result });
+      } else {
+        console.error('❌ FileReader produced no result');
+        sendPlaybackResponse({ success: false, error: 'FileReader failed' });
+      }
     };
 
     reader.onerror = (error) => {
-      console.error('❌ FileReader error:', error);
-      sendPlaybackResponse({ success: false, error: 'Failed to read audio data' });
+      console.error('❌ FileReader error:', reader.error?.message);
+      sendPlaybackResponse({ success: false, error: `FileReader error: ${reader.error?.message}` });
     };
 
-    console.log('📖 Reading blob as data URL...');
     reader.readAsDataURL(finalBlob);
   } catch (err) {
-    console.error('❌ Exception in GET_RECORDING_BLOB:', err);
+    console.error('❌ Exception in GET_RECORDING_BLOB:', err.message);
     sendPlaybackResponse({ success: false, error: err.message });
   }
 }

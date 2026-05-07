@@ -99,16 +99,16 @@ async function startCapture(data) {
     const mediaRecorder = new MediaRecorder(mixedDestination.stream, {
       mimeType: 'audio/webm;codecs=opus'
     });
-    currentMediaRecorder = mediaRecorder; // Store for stopping
-    console.log('✅ MediaRecorder created, state:', mediaRecorder.state);
+    currentMediaRecorder = mediaRecorder;
+    
+    mediaRecorder.onerror = (event) => {
+      console.error('❌ MediaRecorder error:', event.error);
+    };
 
     mediaRecorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
-        // Send audio chunks to background.js -> then to your AI WebSocket
+        console.log('📤 Audio chunk ready - Size:', event.data.size, 'bytes');
         
-        console.log('📤 Sending audio chunk to background.js - Size:', event.data.size, 'bytes', {streamId} )
-
-        // Convert Blob to ArrayBuffer, then to Array (ArrayBuffers can't be sent via chrome.runtime.sendMessage)
         event.data.arrayBuffer().then(arrayBuffer => {
           const uint8Array = new Uint8Array(arrayBuffer);
           const regularArray = Array.from(uint8Array);
@@ -120,17 +120,22 @@ async function startCapture(data) {
               size: event.data.size,
               mimeType: event.data.type
             }
+          }, (response) => {
+            if (chrome.runtime.lastError) {
+              console.error('❌ Failed to send chunk:', chrome.runtime.lastError.message);
+            }
           });
+        }).catch(err => {
+          console.error('❌ Error converting blob to array:', err.message);
         });
       } else {
-        console.log('⚠️ Empty audio chunk received');
+        console.warn('⚠️ Empty audio chunk received');
       }
     };
 
     // Collect data every 1 second (ideal for real-time transcription)
-    console.log('▶️ Starting MediaRecorder (capturing every 1 second)...');
-    mediaRecorder.start(1000);
-    console.log('✅ Recording started! State:', mediaRecorder.state); 
+    console.log('▶️ Recording started - collecting audio every 1 second');
+    mediaRecorder.start(1000); 
 
   } catch (err) {
     console.error('❌ Error capturing audio:', err);

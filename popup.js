@@ -166,17 +166,14 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   
   if (message.type === 'DOWNLOAD_RESPONSE') {
-    console.log('✅ Received download response:', message.data);
     handleDownloadResponse(message.data);
   }
 
   if (message.type === 'PLAYBACK_RESPONSE') {
-    console.log('✅ Received playback response:', message.data);
     handlePlaybackResponse(message.data);
   }
   
   if (message.type === 'TRANSCRIPTION_UPDATE') {
-    console.log('📝 Received transcription:', message.data);
     handleTranscription(message.data);
   }
   
@@ -190,12 +187,10 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   
   if (message.type === 'INSIGHTS_READY') {
-    console.log('💡 Received insights:', message.data);
     displayInsights(message.data);
   }
   
   if (message.type === 'LIVE_INSIGHTS_UPDATE') {
-    console.log('📊 Received live insights:', message.data);
     displayLiveInsights(message.data);
   }
   
@@ -242,7 +237,7 @@ function handleDownloadResponse(response) {
       document.body.removeChild(a);
       const sizeMB = (response.size / 1024 / 1024).toFixed(2);
       statusDiv.innerHTML = `Status: Download started (${sizeMB} MB)`;
-      console.log('✅ Download initiated successfully');
+      console.log('✅ Download started');
     } else {
       const errorMsg = response?.error || 'Download failed - invalid response';
       console.error('❌ Download response invalid:', errorMsg);
@@ -413,11 +408,8 @@ playBtn.addEventListener('click', async () => {
 });
 
 function handlePlaybackResponse(response) {
-  console.log('Handling playback response:', response);
-
   try {
     if (response && response.success && response.dataUrl) {
-      console.log('Setting audio source, data URL length:', response.dataUrl.length);
       
       if (!audioPlayer) {
         console.error('❌ Audio player element not found');
@@ -431,12 +423,12 @@ function handlePlaybackResponse(response) {
 
       // Wait for audio to be loaded before playing
       audioPlayer.onloadeddata = () => {
-        console.log('Audio loaded successfully, duration:', audioPlayer.duration);
+        const duration = audioPlayer.duration;
+        const durationText = isFinite(duration) ? `${Math.round(duration)}s` : 'Unknown';
         audioPlayer.play()
           .then(() => {
-            statusDiv.innerHTML = "Status: Playing...";
+            statusDiv.innerHTML = `Status: Playing... (${durationText})`;
             playBtn.disabled = false;
-            console.log('✅ Playback started');
           })
           .catch(err => {
             console.error('❌ Play error:', err);
@@ -478,7 +470,7 @@ audioPlayer.addEventListener('ended', () => {
 
 // Handle transcription updates
 function handleTranscription(data) {
-  console.log('📝 Handling transcription:', data);
+  // Handle transcription update
   
   const { transcript, is_final, timestamp } = data;
   
@@ -489,7 +481,7 @@ function handleTranscription(data) {
   
   // Make sure section is visible
   if (!transcriptionSection.classList.contains('active')) {
-    console.log('✅ Activating transcription section');
+
     transcriptionSection.classList.add('active');
   }
   
@@ -504,7 +496,7 @@ function handleTranscription(data) {
   const existingInterim = transcriptContainer.querySelector('.transcript-item.interim');
   
   if (is_final) {
-    console.log('✅ Final transcript:', transcript);
+
     // Remove interim if exists
     if (existingInterim) {
       existingInterim.remove();
@@ -544,7 +536,7 @@ function handleTranscription(data) {
 
 // Display insights
 function displayInsights(insights) {
-  console.log('📊 Displaying insights:', insights);
+
 
   insightsSection.classList.add('active');
   switchTab('insights');
