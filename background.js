@@ -436,6 +436,149 @@ function handleStopRecording(sendResponse) {
   return false; // Don't use sendResponse callback
 }
 
+// Helper: Extract complete questions from transcript
+function extractCompleteQuestions(fullTranscript) {
+  const questions = [];
+  const fullText = fullTranscript.map(t => t.text).join(' ');
+  
+  // Split by sentence boundaries, then find questions
+  const sentences = fullText.match(/[^.?!]+[.?!]+/g) || [];
+  
+  sentences.forEach(sentence => {
+    sentence = sentence.trim();
+    // Check if sentence is a question (ends with ?)
+    if (sentence.endsWith('?')) {
+      // Ensure minimum length and meaningful content (not just single word)
+      const words = sentence.replace(/\?$/, '').split(/\s+/).filter(w => w.length > 0);
+      if (words.length >= 3) {  // At least 3 words for a proper question
+        questions.push(sentence);
+      }
+    }
+  });
+  
+  return [...new Set(questions)];  // Remove duplicates
+}
+
+// Helper: Extract full sentiment lines with surrounding context
+function extractFullSentimentLines(fullTranscript, type) {
+  const lines = [];
+  const sentimentWords = {
+    positive: ['great', 'love', 'excellent', 'good', 'happy', 'yes', 'perfect', 'interested',
+               'sounds good', 'excited', 'amazing', 'definitely', 'absolutely', 'wonderful', 'fantastic',
+               'helpful', 'benefit', 'value', 'impressive', 'exactly', 'makes sense', 'like that', 'like this'],
+    negative: ['not', 'never', 'cant', 'cannot', 'wont', 'wouldnt', 'dont', 'difficult',
+               'problem', 'issue', 'concern', 'worried', 'expensive', 'too much', 'bad', 'wrong',
+               'unfortunately', 'doubt', 'unsure', 'confused', 'challenging', 'struggle', 'disappoint',
+               'hesitant', 'objection', 'not sure', 'no idea']
+  };
+  
+  const words = sentimentWords[type] || [];
+  
+  fullTranscript.forEach((t, idx) => {
+    const text = t.text.toLowerCase();
+    const hasKeyword = words.some(word => text.includes(word.toLowerCase()));
+    
+    if (hasKeyword) {
+      // Get surrounding context if available
+      let context = t.text;
+      
+      // Add context from adjacent transcript items if they exist
+      if (idx > 0 && fullTranscript[idx - 1].text.length < 100) {
+        context = fullTranscript[idx - 1].text + ' ' + context;
+      }
+      if (idx < fullTranscript.length - 1 && fullTranscript[idx + 1].text.length < 100) {
+        context = context + ' ' + fullTranscript[idx + 1].text;
+      }
+      
+      context = context.trim();
+      if (context.length > 15 && !lines.includes(context)) {  // Avoid very short lines
+        lines.push(context);
+      }
+    }
+  });
+  
+  return lines;
+}
+
+// Helper: Extract doubt/concern statements with full context
+function extractDoubtsAndConcerns(fullTranscript) {
+  const concerns = [];
+  const doubtPatterns = [
+    // Explicit concerns
+    { pattern: /concern|worried|worry|hesita|not sure|unsure|unclear|confusing|confused/i, strength: 'high' },
+    { pattern: /what if|what about|what happens/i, strength: 'high' },
+    
+    // Functionality questions
+    { pattern: /does .* (mean|work|matter)|is there|can .* be|could .* be|why .* not/i, strength: 'medium' },
+    
+    // Objections
+    { pattern: /risk|problem|issue|challenge|difficult|complicated|complex/i, strength: 'high' },
+    { pattern: /expensive|cost|price|afford|budget|worth|investment|roi/i, strength: 'high' },
+    { pattern: /compatible|integration|integrate|support|supported|conflict/i, strength: 'medium' },
+    { pattern: /security|safe|data|privacy|compliance|confidential|encrypt|protect/i, strength: 'high' },
+    
+    // Performance/timeline concerns  
+    { pattern: /slow|speed|performance|downtime|impact|break|timeline|ready|prepared/i, strength: 'medium' }
+  ];
+  
+  fullTranscript.forEach((t, idx) => {
+    const text = t.text;
+    const lowerText = text.toLowerCase();
+    
+    // Find which pattern(s) match
+    doubtPatterns.forEach(({ pattern, strength }) => {
+      if (pattern.test(text)) {
+        // Extract surrounding context for better understanding
+        let contextText = text;
+        
+        // Add preceding sentence for context
+        if (idx > 0 && fullTranscript[idx - 1].text.length < 150) {
+          const prevText = fullTranscript[idx - 1].text.trim();
+          if (!prevText.endsWith('.') && !prevText.endsWith('?')) {
+            contextText = prevText + ' ' + contextText;
+          } else {
+            contextText = prevText + ' ' + contextText;
+          }
+        }
+        
+        // Add following sentence for context
+        if (idx < fullTranscript.length - 1 && fullTranscript[idx + 1].text.length < 150) {
+          const nextText = fullTranscript[idx + 1].text.trim();
+          contextText = contextText + ' ' + nextText;
+        }
+        
+        contextText = contextText.trim();
+        
+        // Avoid duplicates
+        const isDuplicate = concerns.some(c => c.text.toLowerCase() === contextText.toLowerCase());
+        if (!isDuplicate && contextText.length > 20) {
+          concerns.push({
+            text: contextText,
+            strength: strength
+          });
+        }
+      }
+    });
+  });
+  
+  // Deduplicate and sort by strength
+  const unique = [];
+  const seen = new Set();
+  concerns.forEach(c => {
+    const normalized = c.text.toLowerCase().substring(0, 50);
+    if (!seen.has(normalized)) {
+      seen.add(normalized);
+      unique.push(c);
+    }
+  });
+  
+  // Sort high strength first, return top 8
+  return unique.sort((a, b) => {
+    const strengthMap = { high: 2, medium: 1, low: 0 };
+    return (strengthMap[b.strength] || 0) - (strengthMap[a.strength] || 0);
+  }).slice(0, 8).map(c => c.text);
+}
+
 // Generate live insights (called on each final transcript)
 function generateLiveInsights() {
   if (fullTranscript.length === 0) {
@@ -446,87 +589,24 @@ function generateLiveInsights() {
   const fullText = fullTranscript.map(t => t.text).join(' ');
   const wordCount = fullText.split(/\s+/).filter(w => w.length > 0).length;
   
-  // Extract actual question and doubt texts
-  const questionList = [];
-  const doubtList = [];
-  const doubtPatterns = [
-    // Explicit concerns and worries
-    /concern/i, /worried/i, /worry/i, /concern(ed)?/i, /hesita/i,
-    /not sure/i, /unsure/i, /unclear/i, /confusing/i, /confused/i,
-    /what if/i, /what about/i, /what happens/i,
-    
-    // Questions about functionality and compatibility
-    /does .* (mean|work|matter)/i, /is there/i, /can .* be/i,
-    /could .* be/i, /if .* then/i, /why .* not/i, /how .* work/i,
-    /how long/i, /how much/i, /how many/i, /when will/i, /when can/i,
-    
-    // Potential objections and risks
-    /risk/i, /problem/i, /issue/i, /challenge/i, /difficult/i,
-    /complicated/i, /complex/i, /concern(ing)?/i, /worried about/i,
-    /concerned about/i, /hesitant/i, /unsure about/i, /not convinced/i,
-    
-    // Compatibility and integration concerns
-    /compatible/i, /integration/i, /integrate with/i, /work with/i,
-    /support/i, /supported/i, /will it (work|fit|integrate)/i,
-    
-    // Performance and implementation concerns
-    /will it slow|speed|performance|slow down/i, /downtime/i, /impact/i,
-    /affect our/i, /break/i, /break anything/i, /conflict/i,
-    
-    // Cost and ROI concerns
-    /expensive/i, /cost/i, /price/i, /afford/i, /budget/i, /worth it/i,
-    /investment/i, /return/i, /roi/i, /value/i,
-    
-    // Timeline and implementation concerns
-    /how long will it take/i, /timeline/i, /deadline/i, /rush/i,
-    /too fast|quick/i, /enough time/i, /ready/i, /prepared/i,
-    
-    // Alternative solutions and competitors
-    /alternative/i, /other options?/i, /competitors?/i, /versus/i,
-    /compared to/i, /similar to/i, /instead of/i, /better than/i,
-    
-    // Training and adoption concerns
-    /learn/i, /training/i, /complicated to use/i, /user friendly/i,
-    /easy to use/i, /adoption/i, /understand/i, /learning curve/i,
-    
-    // Data and security concerns
-    /secure/i, /security/i, /safe/i, /data/i, /privacy/i, /compliance/i,
-    /confidential/i, /encrypt/i, /protect/i, /backup/i, /loss/i
-  ];
-
-  fullTranscript.forEach(t => {
-    const text = t.text.trim();
-    const questionsInText = [...text.matchAll(/[^.?!]*\?/g)]
-      .map(match => match[0].trim())
-      .filter(Boolean);
-
-    questionsInText.forEach(question => {
-      questionList.push(question);
-      if (doubtPatterns.some(pattern => pattern.test(question)) && !doubtList.includes(question)) {
-        doubtList.push(question);
-      }
-    });
-
-    if (doubtPatterns.some(pattern => pattern.test(text)) && !doubtList.includes(text)) {
-      doubtList.push(text);
-    }
-  });
-
-  const uniqueQuestions = [...new Set(questionList)].slice(0, 8);
-  const uniqueDoubts = [...new Set(doubtList)].slice(0, 8);
+  // Extract actual question and doubt texts using improved context-aware helpers
+  const uniqueQuestions = extractCompleteQuestions(fullTranscript).slice(0, 8);
+  const uniqueDoubts = extractDoubtsAndConcerns(fullTranscript).slice(0, 8);
   const questions = uniqueQuestions.length;
 
-  // Sentiment analysis - track both counts and contributing lines
+  // Sentiment analysis - track both counts and contributing FULL lines
   const sentimentCounts = { positive: 0, neutral: 0, negative: 0 };
-  const sentimentLines = { positive: [], neutral: [], negative: [] };
+  const sentimentLines = { 
+    positive: extractFullSentimentLines(fullTranscript, 'positive'),
+    neutral: [],
+    negative: extractFullSentimentLines(fullTranscript, 'negative')
+  };
   
+  // Count sentiment from transcript items
   fullTranscript.forEach(t => {
     const sentiment = t.sentiment || 'neutral';
     if (sentiment && sentimentCounts.hasOwnProperty(sentiment)) {
       sentimentCounts[sentiment]++;
-      if (t.text && t.text.trim()) {
-        sentimentLines[sentiment].push(t.text);
-      }
     }
   });
   
