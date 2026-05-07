@@ -231,21 +231,29 @@ function handleStopResponse(response) {
 }
 
 function handleDownloadResponse(response) {
-  if (response && response.success && response.dataUrl) {
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const a = document.createElement('a');
-    a.href = response.dataUrl;
-    a.download = `recording-${timestamp}.webm`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    const sizeMB = (response.size / 1024 / 1024).toFixed(2);
-    statusDiv.innerHTML = `Status: Download started (${sizeMB} MB)`;
-    console.log('Download initiated successfully');
-  } else {
-    statusDiv.innerHTML = `Status: ${response?.error || 'Download failed'}`;
+  try {
+    if (response && response.success && response.dataUrl) {
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const a = document.createElement('a');
+      a.href = response.dataUrl;
+      a.download = `recording-${timestamp}.webm`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      const sizeMB = (response.size / 1024 / 1024).toFixed(2);
+      statusDiv.innerHTML = `Status: Download started (${sizeMB} MB)`;
+      console.log('✅ Download initiated successfully');
+    } else {
+      const errorMsg = response?.error || 'Download failed - invalid response';
+      console.error('❌ Download response invalid:', errorMsg);
+      statusDiv.innerHTML = `Status: ${errorMsg}`;
+    }
+  } catch (err) {
+    console.error('❌ Exception in handleDownloadResponse:', err);
+    statusDiv.innerHTML = `Status: Download error - ${err.message}`;
+  } finally {
+    downloadBtn.disabled = false;
   }
-  downloadBtn.disabled = false;
 }
 
 startBtn.addEventListener('click', async () => {
@@ -356,7 +364,20 @@ downloadBtn.addEventListener('click', () => {
   console.log('Download button clicked');
   statusDiv.innerHTML = "Status: Preparing download...";
   downloadBtn.disabled = true;
-  chrome.runtime.sendMessage({ type: 'DOWNLOAD_RECORDING' });
+  
+  try {
+    chrome.runtime.sendMessage({ type: 'DOWNLOAD_RECORDING' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Download message error:', chrome.runtime.lastError);
+        statusDiv.innerHTML = `Status: Error - ${chrome.runtime.lastError.message}`;
+        downloadBtn.disabled = false;
+      }
+    });
+  } catch (err) {
+    console.error('❌ Exception sending download message:', err);
+    statusDiv.innerHTML = `Status: Exception - ${err.message}`;
+    downloadBtn.disabled = false;
+  }
 });
 
 playBtn.addEventListener('click', async () => {
@@ -366,7 +387,13 @@ playBtn.addEventListener('click', async () => {
 
   try {
     console.log('Sending GET_RECORDING_BLOB message...');
-    chrome.runtime.sendMessage({ type: 'GET_RECORDING_BLOB' });
+    chrome.runtime.sendMessage({ type: 'GET_RECORDING_BLOB' }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('❌ Playback message error:', chrome.runtime.lastError);
+        statusDiv.innerHTML = `Status: Error - ${chrome.runtime.lastError.message}`;
+        playBtn.disabled = false;
+      }
+    });
     console.log('✅ Playback message sent, waiting for response via onMessage...');
 
     // Fallback timeout
@@ -388,36 +415,50 @@ playBtn.addEventListener('click', async () => {
 function handlePlaybackResponse(response) {
   console.log('Handling playback response:', response);
 
-  if (response && response.success && response.dataUrl) {
-    console.log('Setting audio source, data URL length:', response.dataUrl.length);
-    audioPlayer.src = response.dataUrl;
-    audioPlayer.classList.add('active');
+  try {
+    if (response && response.success && response.dataUrl) {
+      console.log('Setting audio source, data URL length:', response.dataUrl.length);
+      
+      if (!audioPlayer) {
+        console.error('❌ Audio player element not found');
+        statusDiv.innerHTML = "Status: Error - Audio player not available";
+        playBtn.disabled = false;
+        return;
+      }
+      
+      audioPlayer.src = response.dataUrl;
+      audioPlayer.classList.add('active');
 
-    // Wait for audio to be loaded before playing
-    audioPlayer.onloadeddata = () => {
-      console.log('Audio loaded successfully, duration:', audioPlayer.duration);
-      audioPlayer.play()
-        .then(() => {
-          statusDiv.innerHTML = "Status: Playing...";
-          playBtn.disabled = false;
-          console.log('Playback started');
-        })
-        .catch(err => {
-          console.error('Play error:', err);
-          statusDiv.innerHTML = `Status: Play error - ${err.message}`;
-          playBtn.disabled = false;
-        });
-    };
+      // Wait for audio to be loaded before playing
+      audioPlayer.onloadeddata = () => {
+        console.log('Audio loaded successfully, duration:', audioPlayer.duration);
+        audioPlayer.play()
+          .then(() => {
+            statusDiv.innerHTML = "Status: Playing...";
+            playBtn.disabled = false;
+            console.log('✅ Playback started');
+          })
+          .catch(err => {
+            console.error('❌ Play error:', err);
+            statusDiv.innerHTML = `Status: Play error - ${err.message}`;
+            playBtn.disabled = false;
+          });
+      };
 
-    audioPlayer.onerror = (e) => {
-      console.error('Audio element error:', e, audioPlayer.error);
-      statusDiv.innerHTML = `Status: Audio error - ${audioPlayer.error?.message || 'Unknown error'}`;
+      audioPlayer.onerror = (e) => {
+        console.error('❌ Audio element error:', e, audioPlayer.error);
+        statusDiv.innerHTML = `Status: Audio error - ${audioPlayer.error?.message || 'Unknown error'}`;
+        playBtn.disabled = false;
+      };
+    } else {
+      const errorMsg = response?.error || 'Playback failed - no data';
+      console.error('❌ Playback failed:', errorMsg);
+      statusDiv.innerHTML = `Status: ${errorMsg}`;
       playBtn.disabled = false;
-    };
-  } else {
-    const errorMsg = response?.error || 'Playback failed - no data';
-    console.error('Playback failed:', errorMsg);
-    statusDiv.innerHTML = `Status: ${errorMsg}`;
+    }
+  } catch (err) {
+    console.error('❌ Exception in handlePlaybackResponse:', err);
+    statusDiv.innerHTML = `Status: Playback error - ${err.message}`;
     playBtn.disabled = false;
   }
 }
