@@ -149,7 +149,13 @@ saveOpenaiKeyBtn.addEventListener('click', () => {
       openaiKeyInput.value = '••••••••••••';
       openaiKeyInput.disabled = true;
       saveOpenaiKeyBtn.textContent = 'Change';
-      statusDiv.textContent = 'OpenAI key saved! You can now use deep AI analysis.';
+      statusDiv.textContent = 'OpenAI key saved! You can now use AI-powered live insights.';
+      
+      // Notify background about the new key
+      chrome.runtime.sendMessage({ 
+        type: 'SET_OPENAI_KEY', 
+        apiKey: key 
+      });
     });
   }
 });
@@ -753,146 +759,275 @@ function displayLiveInsights(insights) {
   if (!insights) return;
 
   let html = '';
-
-  // Latency
-  if (typeof insights.latencyMs === 'number') {
-    html += `
-      <div class="insight-card" style="background:#f5f5f5; border-left:3px solid #607d8b;">
-        <div class="insight-label">Insight Latency</div>
-        <div class="insight-value" style="font-size:13px; color:#607d8b;">${insights.latencyMs} ms</div>
-      </div>
-    `;
-  }
   
-  // Customer Questions (live)
-  if (insights.customerQuestions && insights.customerQuestions.length > 0) {
+  // Show source indicator and latency for LLM insights
+  if (insights.source === 'llm') {
     html += `
-      <div class="insight-card" style="border-left: 3px solid #4285f4;">
-        <div class="insight-label">
-          Questions Asked So Far
-          <span class="card-count">${insights.customerQuestions.length}</span>
-        </div>
-        <div class="question-list">
-          ${insights.customerQuestions.map((q, i) => `
-            <div class="question-item">
-              <span class="question-num">Q${i + 1}</span>
-              <span>${q}</span>
-            </div>
-          `).join('')}
+      <div class="insight-card" style="background:#f0f4ff; border-left:4px solid #4285f4;">
+        <div class="insight-label">AI Insights (OpenAI)</div>
+        <div class="insight-value" style="font-size:13px; color:#1a73e8;">
+          Real-time analysis ${insights.latencyMs ? `(${insights.latencyMs}ms)` : ''}
         </div>
       </div>
     `;
   }
 
-  // Customer Doubts (live)
-  if (insights.customerDoubts && insights.customerDoubts.length > 0) {
-    html += `
-      <div class="insight-card" style="background: #fff8f0; border-left: 3px solid #fb8c00;">
-        <div class="insight-label">
-          Doubts &amp; Concerns
-          <span class="card-count" style="background:#fb8c00;">${insights.customerDoubts.length}</span>
+  // Handle new LLM format (refined insights with customer intent analysis)
+  if (insights.source === 'llm') {
+    // Competitor Risk
+    if (insights.competitorRisk) {
+      const compColor = insights.competitorRisk === 'high' ? '#ea4335' : insights.competitorRisk === 'medium' ? '#ff9800' : '#4caf50';
+      const compLabel = insights.competitorRisk === 'high' ? 'COMPETING' : insights.competitorRisk === 'medium' ? 'EVALUATING' : 'EXCLUSIVE';
+      html += `
+        <div class="insight-card" style="border-left: 4px solid ${compColor};">
+          <div class="insight-label">${compLabel}</div>
+          <div class="insight-value" style="color: ${compColor}; font-size: 12px;">
+            Competitor/alternative risk: ${insights.competitorRisk.toUpperCase()}
+          </div>
         </div>
-        <div class="doubt-list">
-          ${insights.customerDoubts.map(d => `
-            <div class="doubt-item">
-              <span class="doubt-icon">!</span>
-              <span>${d}</span>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-    `;
-  }
+      `;
+    }
 
-  // Sentiment with contributing lines
-  if (insights.sentiment && insights.sentiment.dominant) {
-    const sentiment = insights.sentiment.dominant;
-    const sentimentClass = `sentiment-${sentiment}`;
-    const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
-    const lines = insights.sentiment.lines || {};
+    // Customer Needs (underlying problems they're trying to solve)
+    if (insights.customerNeeds && insights.customerNeeds.length > 0) {
+      html += `
+        <div class="insight-card" style="border-left: 4px solid #2196f3;">
+          <div class="insight-label">What They Really Need</div>
+          <div class="need-list">
+            ${insights.customerNeeds.map(need => {
+              const cleanNeed = need.replace(/[^\x00-\x7F]/g, '').trim();
+              return `
+              <div style="padding: 8px; background: #e3f2fd; margin: 6px 0; border-radius: 4px; font-size: 13px; color: #1565c0;">
+                - ${cleanNeed}
+              </div>
+            `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
 
-    let sentimentHtml = `
-      <div class="insight-card">
-        <div class="insight-label">Overall Sentiment</div>
-        <div class="insight-value ${sentimentClass}">
-          ${sentimentLabel}
-        </div>
-        <div class="stat-grid" style="margin-top: 10px;">
-          <div class="stat-item">
-            <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
-            <div class="stat-label">Positive</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
-            <div class="stat-label">Neutral</div>
-          </div>
-          <div class="stat-item">
-            <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
-            <div class="stat-label">Negative</div>
+    // Decision Criteria (what matters to them based on questions)
+    if (insights.decisionCriteria && insights.decisionCriteria.length > 0) {
+      html += `
+        <div class="insight-card" style="border-left: 4px solid #9c27b0;">
+          <div class="insight-label">How They'll Decide</div>
+          <div class="criteria-list">
+            ${insights.decisionCriteria.map(criterion => {
+              const cleanCriterion = criterion.replace(/[^\x00-\x7F]/g, '').trim();
+              return `
+              <div style="padding: 8px; background: #f3e5f5; margin: 6px 0; border-radius: 4px; font-size: 13px; color: #6a1b9a;">
+                - ${cleanCriterion}
+              </div>
+            `;
+            }).join('')}
           </div>
         </div>
-    `;
-    
-    // Add contributing lines for each sentiment
-    if (lines.positive && lines.positive.length > 0) {
-      sentimentHtml += `
-        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
-          <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines (${lines.positive.length}):</div>
-          ${lines.positive.map(line => `
-            <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
-              "${line}"
-            </div>
-          `).join('')}
+      `;
+    }
+
+    // Hidden Objections (unstated concerns implied by questions)
+    if (insights.hiddenObjections && insights.hiddenObjections.length > 0) {
+      html += `
+        <div class="insight-card" style="border-left: 4px solid #f57c00;">
+          <div class="insight-label">Hidden Concerns (unstated)</div>
+          <div class="hidden-objection-list">
+            ${insights.hiddenObjections.map(concern => `
+              <div style="padding: 8px; background: #ffe0b2; margin: 6px 0; border-radius: 4px; font-size: 13px; color: #e65100;">
+                - ${concern}
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    // Risk Level with context
+    if (insights.riskLevel) {
+      const riskColor = insights.riskLevel === 'high' ? '#d32f2f' : insights.riskLevel === 'medium' ? '#f57c00' : '#388e3c';
+      html += `
+        <div class="insight-card" style="border-left: 4px solid ${riskColor};">
+          <div class="insight-label">Deal Risk</div>
+          <div class="insight-value" style="color: ${riskColor}; text-transform: uppercase; font-weight: bold; font-size: 14px;">
+            ${insights.riskLevel}
+          </div>
+        </div>
+      `;
+    }
+
+    // Sentiment
+    if (insights.sentiment) {
+      const sentimentMap = {
+        positive: { label: 'Positive', color: '#4caf50' },
+        skeptical: { label: 'Skeptical', color: '#ff9800' },
+        anxious: { label: 'Anxious', color: '#ea4335' },
+        indifferent: { label: 'Indifferent', color: '#9e9e9e' },
+        neutral: { label: 'Neutral', color: '#9e9e9e' }
+      };
+      const sent = sentimentMap[insights.sentiment] || sentimentMap.neutral;
+      html += `
+        <div class="insight-card">
+          <div class="insight-label">Emotion</div>
+          <div class="insight-value" style="color: ${sent.color}; font-weight: 500;">
+            ${sent.label}
+          </div>
+        </div>
+      `;
+    }
+
+    // IMMEDIATE ACTION (top priority)
+    if (insights.immediateAction) {
+      html += `
+        <div class="insight-card" style="border-left: 4px solid #d32f2f; background: #ffebee;">
+          <div class="insight-label">ACT NOW</div>
+          <div style="padding: 12px; background: white; border-radius: 4px; font-size: 13px; line-height: 1.7; font-weight: 500; color: #c62828;">
+            ${insights.immediateAction}
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    // Old format (rule-based generateLiveInsights) - keep existing display code
+    // Latency
+    if (typeof insights.latencyMs === 'number') {
+      html += `
+        <div class="insight-card" style="background:#f5f5f5; border-left:3px solid #607d8b;">
+          <div class="insight-label">Insight Latency</div>
+          <div class="insight-value" style="font-size:13px; color:#607d8b;">${insights.latencyMs} ms</div>
         </div>
       `;
     }
     
-    if (lines.negative && lines.negative.length > 0) {
-      sentimentHtml += `
-        <div style="margin-top: 8px;">
-          <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines (${lines.negative.length}):</div>
-          ${lines.negative.map(line => `
-            <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
-              "${line}"
-            </div>
-          `).join('')}
+    // Customer Questions (live)
+    if (insights.customerQuestions && insights.customerQuestions.length > 0) {
+      html += `
+        <div class="insight-card" style="border-left: 3px solid #4285f4;">
+          <div class="insight-label">
+            Questions Asked So Far
+            <span class="card-count">${insights.customerQuestions.length}</span>
+          </div>
+          <div class="question-list">
+            ${insights.customerQuestions.map((q, i) => `
+              <div class="question-item">
+                <span class="question-num">Q${i + 1}</span>
+                <span>${q}</span>
+              </div>
+            `).join('')}
+          </div>
         </div>
       `;
     }
-    
-    sentimentHtml += `</div>`;
-    html += sentimentHtml;
-  }
 
-  // Key Phrases
-  if (insights.keyPhrases && insights.keyPhrases.length > 0) {
-    html += `
-      <div class="insight-card">
-        <div class="insight-label">Key Phrases</div>
-        <div class="key-phrases">
-          ${insights.keyPhrases.map(phrase =>
-            `<span class="phrase-tag">${phrase}</span>`
-          ).join('')}
+    // Customer Doubts (live)
+    if (insights.customerDoubts && insights.customerDoubts.length > 0) {
+      html += `
+        <div class="insight-card" style="background: #fff8f0; border-left: 3px solid #fb8c00;">
+          <div class="insight-label">
+            Doubts &amp; Concerns
+            <span class="card-count" style="background:#fb8c00;">${insights.customerDoubts.length}</span>
+          </div>
+          <div class="doubt-list">
+            ${insights.customerDoubts.map(d => `
+              <div class="doubt-item">
+                <span class="doubt-icon">!</span>
+                <span>${d}</span>
+              </div>
+            `).join('')}
+          </div>
         </div>
-      </div>
-    `;
-  }
+      `;
+    }
 
-  // Action Items
-  if (insights.actionItems && insights.actionItems.length > 0) {
-    html += `
-      <div class="insight-card" style="border-left: 3px solid #34a853;">
-        <div class="insight-label">
-          Action Items
-          <span class="card-count" style="background:#34a853;">${insights.actionItems.length}</span>
+    // Sentiment with contributing lines
+    if (insights.sentiment && insights.sentiment.dominant) {
+      const sentiment = insights.sentiment.dominant;
+      const sentimentClass = `sentiment-${sentiment}`;
+      const sentimentLabel = sentiment === 'positive' ? 'Positive' : sentiment === 'negative' ? 'Negative' : 'Neutral';
+      const lines = insights.sentiment.lines || {};
+
+      let sentimentHtml = `
+        <div class="insight-card">
+          <div class="insight-label">Overall Sentiment</div>
+          <div class="insight-value ${sentimentClass}">
+            ${sentimentLabel}
+          </div>
+          <div class="stat-grid" style="margin-top: 10px;">
+            <div class="stat-item">
+              <div class="stat-number sentiment-positive">${insights.sentiment.breakdown?.positive || 0}</div>
+              <div class="stat-label">Positive</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-number sentiment-neutral">${insights.sentiment.breakdown?.neutral || 0}</div>
+              <div class="stat-label">Neutral</div>
+            </div>
+            <div class="stat-item">
+              <div class="stat-number sentiment-negative">${insights.sentiment.breakdown?.negative || 0}</div>
+              <div class="stat-label">Negative</div>
+            </div>
+          </div>
+      `;
+      
+      // Add contributing lines for each sentiment
+      if (lines.positive && lines.positive.length > 0) {
+        sentimentHtml += `
+          <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e0e0e0;">
+            <div class="stat-label" style="color: #4caf50; margin-bottom: 5px;">Positive Lines (${lines.positive.length}):</div>
+            ${lines.positive.map(line => `
+              <div style="font-size: 12px; color: #4caf50; margin: 4px 0; padding: 4px; background: #f1f8f4; border-radius: 3px;">
+                "${line}"
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+      
+      if (lines.negative && lines.negative.length > 0) {
+        sentimentHtml += `
+          <div style="margin-top: 8px;">
+            <div class="stat-label" style="color: #f44336; margin-bottom: 5px;">Negative Lines (${lines.negative.length}):</div>
+            ${lines.negative.map(line => `
+              <div style="font-size: 12px; color: #f44336; margin: 4px 0; padding: 4px; background: #ffebee; border-radius: 3px;">
+                "${line}"
+              </div>
+            `).join('')}
+          </div>
+        `;
+      }
+      
+      sentimentHtml += `</div>`;
+      html += sentimentHtml;
+    }
+
+    // Key Phrases
+    if (insights.keyPhrases && insights.keyPhrases.length > 0) {
+      html += `
+        <div class="insight-card">
+          <div class="insight-label">Key Phrases</div>
+          <div class="key-phrases">
+            ${insights.keyPhrases.map(phrase =>
+              `<span class="phrase-tag">${phrase}</span>`
+            ).join('')}
+          </div>
         </div>
-        <div class="action-list">
-          ${insights.actionItems.map(item =>
-            `<div class="action-item"><span class="action-check">[ ]</span><span>${item}</span></div>`
-          ).join('')}
+      `;
+    }
+
+    // Action Items
+    if (insights.actionItems && insights.actionItems.length > 0) {
+      html += `
+        <div class="insight-card" style="border-left: 3px solid #34a853;">
+          <div class="insight-label">
+            Action Items
+            <span class="card-count" style="background:#34a853;">${insights.actionItems.length}</span>
+          </div>
+          <div class="action-list">
+            ${insights.actionItems.map(item =>
+              `<div class="action-item"><span class="action-check">[ ]</span><span>${item}</span></div>`
+            ).join('')}
+          </div>
         </div>
-      </div>
-    `;
+      `;
+    }
   }
 
   insightsContainer.innerHTML = html;

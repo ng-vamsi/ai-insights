@@ -181,3 +181,4 @@ function stopCapture() {
     console.error('❌ Error stopping capture:', err);
   }
 }
+

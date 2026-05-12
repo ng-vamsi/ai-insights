@@ -16,6 +16,23 @@ let sentimentData = [];
 let detectedTopics = [];
 let detectedIntents = [];
 
+// LLM Configuration for real-time insights
+let openaiApiKey = null;
+let lastInsightGenerationTime = 0;
+const INSIGHT_GENERATION_INTERVAL = 10000; // Generate insights every 10 seconds (batch for cost efficiency)
+
+// Load saved API keys from storage on startup
+chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey'], (result) => {
+  if (result.openaiApiKey) {
+    openaiApiKey = result.openaiApiKey;
+    console.log('🔑 OpenAI API key loaded from storage, length:', openaiApiKey.length);
+  }
+  if (result.deepgramApiKey) {
+    deepgramApiKey = result.deepgramApiKey;
+    console.log('🔑 Deepgram API key loaded from storage, length:', deepgramApiKey.length);
+  }
+});
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     console.log('📨 Message received in background.js:', message )
@@ -23,7 +40,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   // Handle SET_DEEPGRAM_KEY
   if (message.type === 'SET_DEEPGRAM_KEY') {
     deepgramApiKey = message.apiKey;
-    console.log('🔑 Deepgram API key configured');
+    // Also save to storage so it persists across service worker restarts
+    chrome.storage.local.set({ deepgramApiKey: message.apiKey });
+    console.log('🔑 Deepgram API key configured and saved to storage');
+    return false;
+  }
+
+  // Handle SET_OPENAI_KEY
+  if (message.type === 'SET_OPENAI_KEY') {
+    openaiApiKey = message.apiKey;
+    // Also save to storage so it persists across service worker restarts
+    chrome.storage.local.set({ openaiApiKey: message.apiKey });
+    console.log('🔑 OpenAI API key configured and saved to storage');
     return false;
   }
 
@@ -220,8 +248,8 @@ function initDeepgramConnection() {
             const intents = data.metadata?.intents || [];
             
             if (is_final && transcript && transcript.trim() !== '') {
-              // Use Deepgram sentiment if available, else fall back to rule-based
-              const textSentiment = analyzeTextSentiment(transcript);
+              // Use LLM for sentiment if available, else fall back to rule-based
+              const textSentiment = analyzeTextSentimentWithRules(transcript);
               const effectiveSentiment = sentiment || textSentiment;
 
               // Store final transcript for insights
@@ -238,23 +266,26 @@ function initDeepgramConnection() {
               
               console.log('📊 Stored transcript segment:', { sentiment, topics, intents });
               
-              // Generate and send live insights with latency
-              const liveInsights = generateLiveInsights();
-              if (liveInsights) {
-                const now = Date.now();
-                liveInsights.generatedAt = now;
-                // Use the timestamp of the last transcript segment for latency
-                const lastTranscript = fullTranscript[fullTranscript.length - 1];
-                if (lastTranscript && lastTranscript.timestamp) {
-                  liveInsights.latencyMs = now - lastTranscript.timestamp;
-                } else {
-                  liveInsights.latencyMs = null;
+              // Generate and send live insights with latency (async, using LLM if available)
+              generateLiveInsightsWithLLM().then(liveInsights => {
+                if (liveInsights) {
+                  const now = Date.now();
+                  liveInsights.generatedAt = now;
+                  // Use the timestamp of the last transcript segment for latency
+                  const lastTranscript = fullTranscript[fullTranscript.length - 1];
+                  if (lastTranscript && lastTranscript.timestamp) {
+                    liveInsights.latencyMs = now - lastTranscript.timestamp;
+                  } else {
+                    liveInsights.latencyMs = null;
+                  }
+                  chrome.runtime.sendMessage({
+                    type: 'LIVE_INSIGHTS_UPDATE',
+                    data: liveInsights
+                  }).catch(() => {});
                 }
-                chrome.runtime.sendMessage({
-                  type: 'LIVE_INSIGHTS_UPDATE',
-                  data: liveInsights
-                }).catch(() => {});
-              }
+              }).catch(err => {
+                console.error('❌ Error generating live insights:', err);
+              });
             }
             
             if (transcript && transcript.trim() !== '') {
@@ -1095,7 +1126,183 @@ function generateFallbackSummary(transcript) {
   return summary;
 }
 
-function analyzeTextSentiment(text) {
+// ── LLM API Functions for Real-time Insights ──────────────────
+
+async function generateLiveInsightsWithLLM() {
+  if (fullTranscript.length === 0) {
+    return null;
+  }
+  
+  const now = Date.now();
+  
+  // Only generate insights every 10 seconds (batch processing for cost efficiency)
+  if (now - lastInsightGenerationTime < INSIGHT_GENERATION_INTERVAL) {
+    return null;
+  }
+  
+  lastInsightGenerationTime = now;
+  
+  // Get transcript since last generation
+  const recentTranscript = fullTranscript
+    .map(t => t.text)
+    .join(' ')
+    .substring(0, 1500); // Limit to last 1500 chars to reduce API cost
+  
+  if (recentTranscript.trim().length < 50) {
+    return null;
+  }
+  
+  console.log('🤖 Calling OpenAI for live insights...');
+  
+  try {
+    const insights = await callOpenAIForLiveInsights(recentTranscript);
+    return {
+      ...insights,
+      generatedAt: now,
+      source: 'llm'
+    };
+  } catch (err) {
+    console.error('❌ LLM insight generation failed:', err);
+    // Fallback to rule-based
+    console.log('⚠️ Falling back to rule-based insights');
+    return generateLiveInsights();
+  }
+}
+
+async function callOpenAIForLiveInsights(transcript) {
+  if (!openaiApiKey) {
+    throw new Error('OpenAI API key not configured');
+  }
+  
+  const systemPrompt = `You are a real-time sales intelligence analyst for high-stakes sales conversations. Your job is NOT to summarize or repeat the transcript. Instead:
+
+ANALYZE CUSTOMER INTENT:
+- What underlying problem is the customer trying to solve? (not just what they say, but what drives it)
+- What questions reveal their true priorities and concerns?
+- What is the customer's emotional temperature? (confident, skeptical, anxious, indifferent?)
+- Are they comparing alternatives? What does that tell you about their evaluation criteria?
+
+EXTRACT STRATEGIC INSIGHTS:
+- Identify hidden objections (things they don't say directly but imply)
+- Spot decision criteria from their questions (timeline? budget? integration? security?)
+- Recognize buying momentum signals vs. stalling tactics
+- Note what they DON'T ask about (gaps in their thinking?)
+
+PROVIDE ACTIONABLE INTELLIGENCE:
+- What should the rep emphasize RIGHT NOW to move the deal forward?
+- Where is the customer most vulnerable to losing to competitors?
+- What single question would reveal if this is a real opportunity?
+
+RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
+{
+  "customerNeeds": ["actual underlying need #1", "actual need #2 - inferred from questions"],
+  "buyingSignals": ["specific positive indicator with context", "another signal showing intent"],
+  "hiddenObjections": ["unstated concern implied by their questions", "potential blocker not mentioned directly"],
+  "decisionCriteria": ["what matters to them based on what they ask about", "e.g. 'timeline critical - asked 3x about implementation speed'"],
+  "sentiment": "positive|neutral|skeptical|anxious",
+  "competitorRisk": "low|medium|high - are they comparing to alternatives?",
+  "immediateAction": "one specific sentence on what to do/say in the next 30 seconds to advance the deal",
+  "riskLevel": "low|medium|high - likelihood of losing this deal if you don't act now"
+}`;
+
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openaiApiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Analyze this sales conversation segment:\n\n${transcript}` }
+        ],
+        max_tokens: 300,
+        temperature: 0.3
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(`OpenAI API error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
+    }
+    
+    const data = await response.json();
+    const content = data.choices[0].message.content;
+    
+    console.log('🤖 LLM Response:', content);
+    
+    // Parse JSON response
+    let insights;
+    try {
+      insights = JSON.parse(content);
+    } catch (e) {
+      console.error('❌ Failed to parse LLM response:', content);
+      throw new Error('Invalid JSON from LLM');
+    }
+    console.log({insights})
+    
+    // Return ALL refined insight fields - not just a subset
+    return {
+      customerNeeds: insights.customerNeeds || [],
+      buyingSignals: insights.buyingSignals || [],
+      hiddenObjections: insights.hiddenObjections || [],
+      decisionCriteria: insights.decisionCriteria || [],
+      sentiment: insights.sentiment || 'neutral',
+      competitorRisk: insights.competitorRisk || 'low',
+      immediateAction: insights.immediateAction || '',
+      riskLevel: insights.riskLevel || 'medium'
+    };
+  } catch (err) {
+    console.error('❌ OpenAI API call failed:', err);
+    throw err;
+  }
+}
+
+async function analyzeTextSentimentWithLLM(text) {
+  if (!openaiApiKey || !text || text.trim().length === 0) {
+    return analyzeTextSentimentWithRules(text); // Fallback
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${openaiApiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'Respond with ONLY one word: "positive", "neutral", or "negative"' },
+          { role: 'user', content: `Sentiment of: "${text}"` }
+        ],
+        max_tokens: 10,
+        temperature: 0
+      })
+    });
+    
+    if (!response.ok) {
+      return analyzeTextSentimentWithRules(text);
+    }
+    
+    const data = await response.json();
+    const sentiment = data.choices[0].message.content.toLowerCase().trim();
+    
+    if (['positive', 'neutral', 'negative'].includes(sentiment)) {
+      console.log(`📊 LLM Sentiment: "${text.substring(0, 50)}..." → ${sentiment}`);
+      return sentiment;
+    }
+    
+    return analyzeTextSentimentWithRules(text);
+  } catch (err) {
+    console.warn('⚠️ Sentiment LLM call failed, using rules:', err.message);
+    return analyzeTextSentimentWithRules(text);
+  }
+}
+
+function analyzeTextSentimentWithRules(text) {
   const lower = text.toLowerCase();
   const positiveWords = ['great', 'love', 'excellent', 'good', 'happy', 'yes', 'perfect', 'interested',
     'sounds good', 'excited', 'amazing', 'definitely', 'absolutely', 'wonderful', 'fantastic',
