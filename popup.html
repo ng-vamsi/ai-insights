@@ -489,6 +489,13 @@
         <button id="saveOpenaiKeyBtn" style="font-size: 11px;">Save</button>
       </div>
     </details>
+    <details style="margin-top: 5px;">
+      <summary style="font-size: 10px; color: #666; cursor: pointer;">Optional: RAG API for Document Search</summary>
+      <div class="api-key-input" style="margin-top: 5px;">
+        <input type="text" id="ragUrlInput" placeholder="RAG API URL (e.g., http://localhost:8000)" style="font-size: 11px;">
+        <button id="saveRagUrlBtn" style="font-size: 11px;">Save</button>
+      </div>
+    </details>
   </div>
 
   <div class="controls">
@@ -530,7 +537,9 @@
     </div>
 
     <div id="insightsPanel" class="tab-panel active">
+      <div id="questionsContainer" style="margin-top: 8px;"></div>
       <div id="insightsContainer"></div>
+      <div id="ragContainer" style="margin-top: 20px;"></div>
     </div>
 
     <div id="deepPanel" class="tab-panel">

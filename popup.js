@@ -13,12 +13,16 @@ const apiKeyInput         = document.getElementById('apiKeyInput');
 const saveApiKeyBtn       = document.getElementById('saveApiKeyBtn');
 const openaiKeyInput      = document.getElementById('openaiKeyInput');
 const saveOpenaiKeyBtn    = document.getElementById('saveOpenaiKeyBtn');
+const ragUrlInput         = document.getElementById('ragUrlInput');
+const saveRagUrlBtn       = document.getElementById('saveRagUrlBtn');
 const apiKeySection       = document.getElementById('apiKeySection');
 const transcriptionSection= document.getElementById('transcriptionSection');
 const transcriptContainer = document.getElementById('transcriptContainer');
 const insightsSection     = document.getElementById('insightsSection');
 const insightsContainer   = document.getElementById('insightsContainer');
+const questionsContainer  = document.getElementById('questionsContainer');
 const deepContainer       = document.getElementById('deepContainer');
+const ragContainer        = document.getElementById('ragContainer');
 const generateAISummaryBtn= document.getElementById('generateAISummaryBtn');
 const tabInsights         = document.getElementById('tabInsights');
 const tabDeep             = document.getElementById('tabDeep');
@@ -40,6 +44,224 @@ let isRecording = false;
 let deepgramApiKey = null;
 let currentTranscriptText = '';
 let apiKeysLoaded = false; // Track if storage has been loaded
+let ragAnswersMap = {}; // Store RAG answers keyed by questionHash
+let questionsMap = {}; // Store all detected questions with their data
+let pendingLocalQuestionPrefix = ''; // Holds split question starters across transcript chunks
+let dismissedQuestionKeys = new Set(); // User-dismissed questions for current recording
+
+function hashQuestionLocal(question) {
+  let hash = 0;
+  const str = question.toLowerCase().trim();
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return 'q_' + Math.abs(hash).toString(36);
+}
+
+function formatSourcesForDisplay(sources) {
+  if (!Array.isArray(sources)) return [];
+  return sources.map((source) => {
+    if (typeof source === 'string') return source;
+    if (!source || typeof source !== 'object') return '';
+    return source.title || source.name || source.source || source.file || source.path || source.url || source.id || JSON.stringify(source);
+  }).filter(Boolean);
+}
+
+function isLikelyCompleteQuestionLocal(candidate) {
+  if (!candidate) return false;
+
+  const normalized = candidate.replace(/[?]+$/g, '').trim();
+  const words = normalized.split(/\s+/).filter(Boolean);
+  if (words.length < 4) return false;
+
+  const trailingStopWords = new Set([
+    'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon', 'as', 'and', 'or', 'but',
+    'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether'
+  ]);
+  const lastWord = (words[words.length - 1] || '').toLowerCase();
+  if (trailingStopWords.has(lastWord)) return false;
+
+  const lowered = normalized.toLowerCase();
+  if (lowered === 'what happens' || lowered === 'what happens in the event of') {
+    return false;
+  }
+
+  return true;
+}
+
+function normalizeQuestionText(text) {
+  return (text || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function areQuestionsMergeable(a, b) {
+  const aNorm = normalizeQuestionText(a);
+  const bNorm = normalizeQuestionText(b);
+  if (!aNorm || !bNorm) return false;
+  if (aNorm === bNorm) return true;
+
+  const aWords = aNorm.split(' ');
+  const bWords = bNorm.split(' ');
+  const aHead = aWords.slice(0, 2).join(' ');
+  const bHead = bWords.slice(0, 2).join(' ');
+  const sameHead = aHead && bHead && aHead === bHead;
+
+  return sameHead && (aNorm.startsWith(bNorm) || bNorm.startsWith(aNorm));
+}
+
+function upsertQuestion(questionText, incoming = {}) {
+  const normalized = (questionText || '').trim();
+  if (!normalized) return null;
+
+  const textWithMark = normalized.endsWith('?') ? normalized : `${normalized}?`;
+  const normalizedKey = normalizeQuestionText(textWithMark);
+  if (!normalizedKey || dismissedQuestionKeys.has(normalizedKey)) {
+    return null;
+  }
+
+  const incomingHash = incoming.hash;
+  const newHash = incomingHash || hashQuestionLocal(textWithMark);
+
+  if (questionsMap[newHash]) {
+    questionsMap[newHash] = {
+      ...questionsMap[newHash],
+      ...incoming,
+      text: questionsMap[newHash].text || textWithMark,
+      hash: newHash
+    };
+    return newHash;
+  }
+
+  const existingEntry = Object.values(questionsMap).find((q) => areQuestionsMergeable(q.text, textWithMark));
+  if (existingEntry) {
+    const existingNorm = normalizeQuestionText(existingEntry.text);
+    const keepNewText = normalizedKey.length > existingNorm.length;
+
+    if (keepNewText) {
+      const preserved = { ...existingEntry };
+      delete questionsMap[existingEntry.hash];
+      questionsMap[newHash] = {
+        ...preserved,
+        ...incoming,
+        text: textWithMark,
+        hash: newHash,
+        timestamp: preserved.timestamp || incoming.timestamp || Date.now(),
+        answer: incoming.answer || '',
+        sources: incoming.sources || [],
+        noAnswerFound: !!incoming.noAnswerFound,
+        error: incoming.error || null,
+        answerReceived: !!incoming.answerReceived,
+        ragTriggered: false
+      };
+      return newHash;
+    }
+
+    questionsMap[existingEntry.hash] = {
+      ...existingEntry,
+      ...incoming,
+      text: existingEntry.text,
+      hash: existingEntry.hash
+    };
+    return existingEntry.hash;
+  }
+
+  questionsMap[newHash] = {
+    text: textWithMark,
+    hash: newHash,
+    timestamp: incoming.timestamp || Date.now(),
+    answer: incoming.answer || '',
+    sources: incoming.sources || [],
+    noAnswerFound: !!incoming.noAnswerFound,
+    error: incoming.error || null,
+    answerReceived: !!incoming.answerReceived,
+    ragTriggered: !!incoming.ragTriggered
+  };
+  return newHash;
+}
+
+function extractQuestionsFromTranscriptLocal(text) {
+  if (!text || text.trim().length === 0) {
+    return [];
+  }
+
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  const questions = [];
+
+  const markedQuestions = [...cleaned.matchAll(/[^.?!\n]*\?/g)]
+    .map(match => match[0].trim())
+    .filter(q => q.length >= 8)
+    .filter(isLikelyCompleteQuestionLocal);
+  questions.push(...markedQuestions);
+
+  const prefixPattern = /^(who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|might|have|has|had|which)\b/i;
+  const intentPatterns = [
+    /^i want to know\b/i,
+    /^i wanted to know\b/i,
+    /^i want to know if\b/i,
+    /^i wanted to know if\b/i,
+    /^i want to understand\b/i,
+    /^i wanted to ask\b/i,
+    /^i am curious\b/i,
+    /^i'm curious\b/i,
+    /^can you tell me\b/i,
+    /^could you tell me\b/i,
+    /^tell me\b/i
+  ];
+
+  const trailingConnector = /\b(if|how|why|what|when|where|who|which|whether|can|could|would|should|is|are|do|does|did|will|may|might|have|has|had)\s*$/i;
+  const chunks = cleaned.split(/[.\n!]/).map(c => c.trim()).filter(Boolean);
+
+  // Merge pending split question starter with the first new chunk.
+  if (pendingLocalQuestionPrefix && chunks.length > 0) {
+    chunks[0] = `${pendingLocalQuestionPrefix} ${chunks[0]}`.replace(/\s+/g, ' ').trim();
+    pendingLocalQuestionPrefix = '';
+  }
+
+  chunks.forEach(chunk => {
+    const looksLikeQuestion = prefixPattern.test(chunk) || intentPatterns.some(pattern => pattern.test(chunk));
+    if (looksLikeQuestion && chunk.length >= 8) {
+      if (trailingConnector.test(chunk) && !/[.?!]$/.test(chunk)) {
+        pendingLocalQuestionPrefix = chunk;
+      } else {
+        const normalizedChunk = chunk.endsWith('?') ? chunk : `${chunk}?`;
+        if (isLikelyCompleteQuestionLocal(normalizedChunk)) {
+          questions.push(normalizedChunk);
+        }
+      }
+    }
+  });
+
+  // If this raw text is itself an unfinished starter, hold it for next chunk.
+  if ((prefixPattern.test(cleaned) || intentPatterns.some(pattern => pattern.test(cleaned))) && trailingConnector.test(cleaned) && !/[.?!]$/.test(cleaned)) {
+    pendingLocalQuestionPrefix = cleaned;
+  }
+
+  return [...new Set(questions.map(q => q.replace(/\s+/g, ' ').trim()))];
+}
+
+function ensureQuestionInUI(question) {
+  const normalized = (question || '').trim();
+  if (!normalized) return;
+
+  const insertedHash = upsertQuestion(normalized, {
+    timestamp: Date.now(),
+    answer: '',
+    sources: [],
+    noAnswerFound: false,
+    error: null,
+    answerReceived: false,
+    ragTriggered: false
+  });
+
+  if (insertedHash) {
+    displayQuestions();
+  }
+}
 
 // ── Restore UI state when popup reopens ─────────────────
 chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
@@ -58,10 +280,28 @@ chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
     playBtn.disabled = false;
     statusDiv.textContent = `Status: Recording ready (${response.duration}s) — download or play below`;
   }
+
+  // Fetch detected questions
+  chrome.runtime.sendMessage({ type: 'GET_DETECTED_QUESTIONS' }, (questionsResponse) => {
+    if (questionsResponse && questionsResponse.questions && questionsResponse.questions.length > 0) {
+      questionsResponse.questions.forEach(q => {
+        upsertQuestion(q.text, {
+          hash: q.hash,
+          timestamp: q.timestamp,
+          answer: q.answer,
+          sources: q.sources,
+          noAnswerFound: !!q.noAnswerFound,
+          error: q.error || null,
+          answerReceived: !!q.answerReceived
+        });
+      });
+      displayQuestions();
+    }
+  });
 });
 
 // Load API key on startup (MUST complete before recording can start)
-chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
+chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey', 'ragBaseUrl'], (result) => {
   if (result.deepgramApiKey) {
     deepgramApiKey = result.deepgramApiKey;
     console.log('✅ Deepgram API key loaded from storage, length:', deepgramApiKey.length);
@@ -77,6 +317,13 @@ chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
     openaiKeyInput.value = '••••••••••••';
     openaiKeyInput.disabled = true;
     saveOpenaiKeyBtn.textContent = 'Change';
+  }
+
+  if (result.ragBaseUrl) {
+    ragUrlInput.value = result.ragBaseUrl;
+    ragUrlInput.disabled = true;
+    saveRagUrlBtn.textContent = 'Change';
+    console.log('✅ RAG API URL loaded from storage:', result.ragBaseUrl);
   }
   
   // Mark that API keys have been loaded
@@ -160,6 +407,48 @@ saveOpenaiKeyBtn.addEventListener('click', () => {
   }
 });
 
+// Save RAG API URL
+saveRagUrlBtn.addEventListener('click', () => {
+  if (ragUrlInput.disabled) {
+    // Allow editing
+    ragUrlInput.value = '';
+    ragUrlInput.disabled = false;
+    ragUrlInput.focus();
+    saveRagUrlBtn.textContent = 'Save';
+  } else {
+    // Save new URL
+    const url = ragUrlInput.value.trim();
+    if (url.length === 0) {
+      // Clear the URL
+      chrome.storage.local.remove('ragBaseUrl', () => {
+        ragUrlInput.value = '';
+        ragUrlInput.disabled = false;
+        saveRagUrlBtn.textContent = 'Save';
+        statusDiv.textContent = 'RAG API URL removed';
+      });
+      return;
+    }
+
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      alert('Please enter a valid URL (http://... or https://...)');
+      return;
+    }
+    
+    chrome.storage.local.set({ ragBaseUrl: url }, () => {
+      ragUrlInput.value = url;
+      ragUrlInput.disabled = true;
+      saveRagUrlBtn.textContent = 'Change';
+      statusDiv.textContent = 'RAG API URL saved! Document search is now enabled.';
+      
+      // Notify background about the new URL
+      chrome.runtime.sendMessage({ 
+        type: 'SET_RAG_URL', 
+        ragUrl: url 
+      });
+    });
+  }
+});
+
 // Listen for recording stats updates and responses from background
 chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'RECORDING_STATS') {
@@ -215,6 +504,31 @@ chrome.runtime.onMessage.addListener((message) => {
       </div>`;
     switchTab('deep');
   }
+
+  if (message.type === 'RAG_ANSWER_READY') {
+    console.log('📚 Received RAG answer:', message.data);
+    displayRAGAnswer(message.data);
+  }
+
+  if (message.type === 'QUESTIONS_DETECTED') {
+    console.log('📋 Received detected questions:', message.data);
+    if (message.data && message.data.allQuestions) {
+      // Update questionsMap with all detected questions
+      message.data.allQuestions.forEach(q => {
+        upsertQuestion(q.text, {
+          hash: q.hash,
+          timestamp: q.timestamp,
+          answer: q.answer,
+          sources: q.sources,
+          noAnswerFound: !!q.noAnswerFound,
+          error: q.error || null,
+          answerReceived: !!q.answerReceived
+        });
+      });
+      displayQuestions();
+    }
+  }
+
 });
 
 function handleStopResponse(response) {
@@ -317,6 +631,11 @@ startBtn.addEventListener('click', async () => {
   insightsSection.classList.add('active'); // Show insights during recording
   transcriptContainer.innerHTML = ''; // Clear previous transcripts
   insightsContainer.innerHTML = '<div class="insight-card"><div class="insight-label">Live Insights</div><div class="insight-value">Analyzing conversation in real-time...</div></div>';
+  questionsContainer.innerHTML = ''; // Clear previous questions
+  questionsMap = {}; // Reset questions map
+  dismissedQuestionKeys = new Set(); // Reset dismissed questions for new recording
+  pendingLocalQuestionPrefix = ''; // Reset pending split question text
+  ragContainer.innerHTML = ''; // Clear previous RAG answers
   audioPlayer.classList.remove('active');
   audioPlayer.pause();
   audioPlayer.src = '';
@@ -484,6 +803,10 @@ function handleTranscription(data) {
     console.log('⚠️ Empty transcript, skipping');
     return;
   }
+
+  // Popup-side fallback: detect questions from every transcript chunk and show them in UI.
+  const locallyDetectedQuestions = extractQuestionsFromTranscriptLocal(transcript);
+  locallyDetectedQuestions.forEach(q => ensureQuestionInUI(q));
   
   // Make sure section is visible
   if (!transcriptionSection.classList.contains('active')) {
@@ -720,6 +1043,129 @@ function displayInsights(insights) {
   currentTranscriptText = insights.fullText || '';
 }
 
+function displayRAGAnswer(data) {
+  if (!data || !data.question) {
+    console.warn('⚠️ Invalid RAG answer data');
+    return;
+  }
+
+  const { question, questionHash, ragResponse } = data;
+
+  const safeResponse = ragResponse || {
+    answer: '',
+    sources: [],
+    noAnswerFound: true,
+    error: 'No related answer found'
+  };
+
+  const targetHash = upsertQuestion(question, {
+    hash: questionHash,
+    answer: safeResponse.answer || '',
+    sources: formatSourcesForDisplay(safeResponse.sources || []),
+    noAnswerFound: !!safeResponse.noAnswerFound,
+    error: safeResponse.error || null,
+    answerReceived: true,
+    ragTriggered: false
+  });
+
+  if (!targetHash) {
+    return;
+  }
+
+  // Refresh the questions display with updated answer
+  displayQuestions();
+}
+
+function displayQuestions() {
+  if (!questionsMap || Object.keys(questionsMap).length === 0) {
+    questionsContainer.innerHTML = '';
+    return;
+  }
+
+  const sortedQuestions = Object.values(questionsMap)
+    .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+
+  let html = `
+    <div style="font-size: 14px; font-weight: 700; margin-bottom: 12px; padding-bottom: 8px; border-bottom: 2px solid #ea4335; color: #d32f2f;">
+      Questions Asked (${Object.keys(questionsMap).length})
+    </div>
+  `;
+
+  // Display each question with its answer
+  sortedQuestions.forEach((q, idx) => {
+    const questionIndex = idx + 1;
+    
+    html += `
+      <div style="background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px; margin: 10px 0; border-radius: 4px; position: relative;">
+        <button class="remove-question-btn" data-question-hash="${q.hash}" style="position:absolute; top:8px; right:8px; padding:4px 8px; font-size:11px; border:none; border-radius:3px; background:#ea4335; color:#fff; cursor:pointer; font-weight:600;">Delete</button>
+        <div style="font-size: 13px; font-weight: 500; color: #e65100; margin-bottom: 8px;">
+          Q${questionIndex}: ${q.text}
+        </div>
+        <div style="font-size: 12px; color: #5f6368; margin-left: 12px;">
+    `;
+
+    // RAG response block
+    html += `<div style="background: #eef3ff; padding: 8px; border-radius: 4px; margin-bottom: 8px; border-left: 3px solid #3367d6;">`;
+    html += `<div style="font-size: 11px; font-weight: 700; color: #1a3f9d; margin-bottom: 4px;">RAG (/rag/query)</div>`;
+    if (q.answer && q.answer.trim().length > 0) {
+      const formattedAnswer = renderMarkdown(q.answer);
+      html += `<div style="color:#202124; line-height:1.6;">${formattedAnswer}</div>`;
+      if (q.sources && q.sources.length > 0) {
+        html += `<div style="font-size: 11px; color: #5f6368; margin-top: 6px;"><strong>Sources:</strong> ${formatSourcesForDisplay(q.sources).slice(0, 2).join(', ')}</div>`;
+      }
+    } else if (q.noAnswerFound || q.error) {
+      const ragReason = q.error || 'No related answer found in knowledge base';
+      html += `<div style="color:#8d6e63;"><strong>No answer found:</strong> ${ragReason}</div>`;
+    } else if (!q.ragTriggered) {
+      // Only show this message if RAG hasn't been triggered yet
+      // After clicking the button, ragTriggered will be true and this won't show
+    }
+
+    const buttonLabel = q.answerReceived ? 'Query RAG Again' : (q.ragTriggered ? 'Querying...' : 'Get RAG Answer');
+    const buttonDisabled = q.ragTriggered ? 'disabled' : '';
+    html += `<div style="margin-top: 8px;"><button class="ask-rag-btn" data-question-hash="${q.hash}" ${buttonDisabled} style="padding: 6px 10px; font-size: 12px; background:#3367d6; color:#fff; border:none; border-radius:4px; cursor:pointer;">${buttonLabel}</button></div>`;
+    html += `</div>`;
+
+    html += `
+        </div>
+      </div>
+    `;
+  });
+
+  questionsContainer.innerHTML = html;
+}
+
+questionsContainer.addEventListener('click', (event) => {
+  const removeBtn = event.target.closest('.remove-question-btn');
+  if (removeBtn) {
+    const questionHashToRemove = removeBtn.getAttribute('data-question-hash');
+    const questionItemToRemove = questionsMap[questionHashToRemove];
+    if (questionItemToRemove) {
+      dismissedQuestionKeys.add(normalizeQuestionText(questionItemToRemove.text));
+      delete questionsMap[questionHashToRemove];
+      displayQuestions();
+    }
+    return;
+  }
+
+  const button = event.target.closest('.ask-rag-btn');
+  if (!button) return;
+
+  const questionHash = button.getAttribute('data-question-hash');
+  const questionItem = questionsMap[questionHash];
+  if (!questionItem || !questionItem.text) return;
+
+  questionItem.ragTriggered = true;
+  questionItem.noAnswerFound = false;
+  questionItem.error = null;
+  displayQuestions();
+
+  chrome.runtime.sendMessage({
+    type: 'QUERY_RAG_QUESTION',
+    question: questionItem.text
+  });
+});
+
 function renderMarkdown(text) {
   return text
     // Normalize line endings (OpenAI may return \r\n)
@@ -733,8 +1179,6 @@ function renderMarkdown(text) {
     .replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/__(.+?)__/g, '<strong>$1</strong>')
-    // Bullet lists (-, *, •)
-    .replace(/^[\-\*•] (.+)$/gm, '<div class="ai-bullet">• $1</div>')
     // Numbered lists
     .replace(/^\d+\. (.+)$/gm, (_, p) => `<div class="ai-numbered">${p}</div>`)
     // Strip any remaining unmatched markdown symbols

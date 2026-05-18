@@ -21,8 +21,62 @@ let openaiApiKey = null;
 let lastInsightGenerationTime = 0;
 const INSIGHT_GENERATION_INTERVAL = 10000; // Generate insights every 10 seconds (batch for cost efficiency)
 
+// RAG Configuration for document search
+let ragBaseUrl = 'http://localhost:8000';
+const RAG_QUERY_TIMEOUT_MS = 300000; // Wait up to 5 minutes for local RAG backend responses
+let processedQuestions = new Set(); // Track which questions we've already queried
+let ragAnswers = {}; // Store answers keyed by question hash
+let detectedQuestions = []; // Store all questions detected in conversation with their hashes
+let pendingQuestionPrefix = ''; // Holds split question starters across transcript chunks
+
+function normalizeSourceList(sources) {
+  if (!Array.isArray(sources)) {
+    return [];
+  }
+
+  return sources.map((source) => {
+    if (typeof source === 'string') {
+      return source;
+    }
+
+    if (!source || typeof source !== 'object') {
+      return '';
+    }
+
+    return source.title || source.name || source.source || source.file || source.path || source.url || source.id || JSON.stringify(source);
+  }).filter(Boolean);
+}
+
+function isLikelyCompleteQuestion(candidate) {
+  if (!candidate) return false;
+
+  const normalized = candidate.replace(/[?]+$/g, '').trim();
+  const words = normalized.split(/\s+/).filter(Boolean);
+
+  if (words.length < 4) {
+    return false;
+  }
+
+  const lastWord = (words[words.length - 1] || '').toLowerCase();
+  const trailingStopWords = new Set([
+    'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon', 'as', 'and', 'or', 'but',
+    'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether'
+  ]);
+
+  if (trailingStopWords.has(lastWord)) {
+    return false;
+  }
+
+  const lowered = normalized.toLowerCase();
+  if (lowered === 'what happens' || lowered === 'what happens in the event of') {
+    return false;
+  }
+
+  return true;
+}
+
 // Load saved API keys from storage on startup
-chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey'], (result) => {
+chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey', 'ragBaseUrl'], (result) => {
   if (result.openaiApiKey) {
     openaiApiKey = result.openaiApiKey;
     console.log('🔑 OpenAI API key loaded from storage, length:', openaiApiKey.length);
@@ -30,6 +84,10 @@ chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey'], (result) => {
   if (result.deepgramApiKey) {
     deepgramApiKey = result.deepgramApiKey;
     console.log('🔑 Deepgram API key loaded from storage, length:', deepgramApiKey.length);
+  }
+  if (result.ragBaseUrl) {
+    ragBaseUrl = result.ragBaseUrl;
+    console.log('🔗 RAG API base URL loaded from storage:', ragBaseUrl);
   }
 });
 
@@ -52,6 +110,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Also save to storage so it persists across service worker restarts
     chrome.storage.local.set({ openaiApiKey: message.apiKey });
     console.log('🔑 OpenAI API key configured and saved to storage');
+    return false;
+  }
+
+  // Handle SET_RAG_URL
+  if (message.type === 'SET_RAG_URL') {
+    ragBaseUrl = message.ragUrl;
+    // Also save to storage so it persists across service worker restarts
+    chrome.storage.local.set({ ragBaseUrl: message.ragUrl });
+    console.log('🔗 RAG API URL configured and saved to storage:', ragBaseUrl);
     return false;
   }
 
@@ -101,6 +168,76 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Get all detected questions
+  if (message.type === 'GET_DETECTED_QUESTIONS') {
+    sendResponse({
+      questions: detectedQuestions.map(q => ({
+        text: q.text,
+        hash: q.hash,
+        timestamp: q.timestamp,
+        answer: q.answer,
+        sources: q.sources,
+        noAnswerFound: !!q.noAnswerFound,
+        error: q.error || null,
+        answerReceived: q.answerReceived || false
+      }))
+    });
+    return true;
+  }
+
+  // Direct question trigger from popup fallback detection
+  if (message.type === 'QUERY_RAG_QUESTION') {
+    const rawQuestion = (message.question || '').trim();
+    if (!rawQuestion) {
+      return false;
+    }
+
+    const normalizedQuestion = rawQuestion.endsWith('?') ? rawQuestion : `${rawQuestion}?`;
+    const questionHash = hashQuestion(normalizedQuestion);
+    
+    // Clear cache for this question to allow fresh retry
+    processedQuestions.delete(questionHash);
+    delete ragAnswers[questionHash];
+    
+    const existingQuestion = detectedQuestions.find(q => q.hash === questionHash);
+
+    if (!existingQuestion) {
+      detectedQuestions.push({
+        text: normalizedQuestion,
+        hash: questionHash,
+        timestamp: Date.now(),
+        answer: null,
+        sources: [],
+        noAnswerFound: false,
+        error: null,
+        answerReceived: false
+      });
+
+      chrome.runtime.sendMessage({
+        type: 'QUESTIONS_DETECTED',
+        data: {
+          questions: [{ text: normalizedQuestion, hash: questionHash, timestamp: Date.now() }],
+          allQuestions: detectedQuestions.map(q => ({
+            text: q.text,
+            hash: q.hash,
+            timestamp: q.timestamp,
+            answer: q.answer,
+            sources: q.sources || [],
+            noAnswerFound: !!q.noAnswerFound,
+            error: q.error || null,
+            answerReceived: !!q.answerReceived
+          }))
+        }
+      }).catch(() => {});
+    }
+
+    queryRAGAPI(normalizedQuestion).catch(err => {
+      console.error('❌ QUERY_RAG_QUESTION failed:', err.message);
+    });
+
+    return false;
+  }
+
   // Unknown message type
   return false;
 });
@@ -115,6 +252,10 @@ async function handleInitRecording(tabId) {
   sentimentData = [];
   detectedTopics = [];
   detectedIntents = [];
+  detectedQuestions = [];
+  pendingQuestionPrefix = '';
+  processedQuestions = new Set();
+  ragAnswers = {};
   isRecording = true;
   recordingStartTime = Date.now();
   recordingTabId = tabId;
@@ -283,9 +424,17 @@ function initDeepgramConnection() {
                     data: liveInsights
                   }).catch(() => {});
                 }
+
+                // Also detect and query new questions from the transcript
+                detectAndQueryNewQuestions(transcript);
               }).catch(err => {
                 console.error('❌ Error generating live insights:', err);
               });
+            }
+
+            // Detect questions from interim/final transcript text so questions appear ASAP in UI
+            if (transcript && transcript.trim() !== '') {
+              detectAndQueryNewQuestions(transcript);
             }
             
             if (transcript && transcript.trim() !== '') {
@@ -1525,4 +1674,339 @@ function handleGetRecordingBlob() {
     console.error('❌ Exception in GET_RECORDING_BLOB:', err.message);
     sendPlaybackResponse({ success: false, error: err.message });
   }
+}
+
+// ── RAG API Functions for Document Search ──────────────────
+
+// Create a hash key for a question to track if we've already queried it
+function hashQuestion(question) {
+  let hash = 0;
+  const str = question.toLowerCase().trim();
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash; // Convert to 32bit integer
+  }
+  return 'q_' + Math.abs(hash).toString(36);
+}
+
+function extractQuestionsFromText(text) {
+  if (!text || text.trim().length === 0) {
+    return [];
+  }
+
+  const cleaned = text.replace(/\s+/g, ' ').trim();
+  const questions = [];
+
+  // Explicit question mark detection
+  const markedQuestions = [...cleaned.matchAll(/[^.?!\n]*\?/g)]
+    .map(match => match[0].trim())
+    .filter(q => q.length >= 8)
+    .filter(isLikelyCompleteQuestion);
+  questions.push(...markedQuestions);
+
+  // Heuristic detection for spoken questions without '?'
+  const prefixes = /^(who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|might|have|has|had|which)\b/i;
+  const intentQuestionPatterns = [
+    /^i want to know\b/i,
+    /^i wanted to know\b/i,
+    /^i want to know if\b/i,
+    /^i wanted to know if\b/i,
+    /^i want to understand\b/i,
+    /^i wanted to ask\b/i,
+    /^i am curious\b/i,
+    /^i'm curious\b/i,
+    /^can you tell me\b/i,
+    /^could you tell me\b/i,
+    /^tell me\b/i
+  ];
+  const trailingConnector = /\b(if|how|why|what|when|where|who|which|whether|can|could|would|should|is|are|do|does|did|will|may|might|have|has|had)\s*$/i;
+  const chunks = cleaned.split(/[.\n!]/).map(c => c.trim()).filter(Boolean);
+
+  // Merge pending split question starter with the first new chunk.
+  if (pendingQuestionPrefix && chunks.length > 0) {
+    chunks[0] = `${pendingQuestionPrefix} ${chunks[0]}`.replace(/\s+/g, ' ').trim();
+    pendingQuestionPrefix = '';
+  }
+
+  chunks.forEach(chunk => {
+    const looksLikeQuestion = prefixes.test(chunk) || intentQuestionPatterns.some(pattern => pattern.test(chunk));
+    if (looksLikeQuestion && chunk.length >= 8) {
+      // If chunk ends with connector words (e.g., "I want to know how"), keep it as pending.
+      if (trailingConnector.test(chunk) && !/[.?!]$/.test(chunk)) {
+        pendingQuestionPrefix = chunk;
+      } else {
+        const normalized = chunk.endsWith('?') ? chunk : `${chunk}?`;
+        if (isLikelyCompleteQuestion(normalized)) {
+          questions.push(normalized);
+        }
+      }
+    }
+  });
+
+  // If this raw text is itself an unfinished starter, hold it for the next chunk.
+  if ((prefixes.test(cleaned) || intentQuestionPatterns.some(pattern => pattern.test(cleaned))) && trailingConnector.test(cleaned) && !/[.?!]$/.test(cleaned)) {
+    pendingQuestionPrefix = cleaned;
+  }
+
+  return [...new Set(questions.map(q => q.replace(/\s+/g, ' ').trim()))];
+}
+
+// Query the RAG API for a question
+async function queryRAGAPI(question) {
+  if (!ragBaseUrl || ragBaseUrl.length === 0) {
+    console.log('⚠️ RAG API URL not configured, skipping document search');
+    return null;
+  }
+
+  if (!question || question.trim().length === 0) {
+    return null;
+  }
+
+  const questionHash = hashQuestion(question);
+
+  // Check if we've already queried this question (allow retries by removing from cache)
+  if (processedQuestions.has(questionHash)) {
+    console.log('ℹ️ Question already processed, sending cached answer');
+    const cachedAnswer = ragAnswers[questionHash];
+    if (cachedAnswer) {
+      // Still send the cached answer back to popup for retry button resets
+      chrome.runtime.sendMessage({
+        type: 'RAG_ANSWER_READY',
+        data: {
+          question,
+          questionHash,
+          ragResponse: cachedAnswer
+        }
+      }).catch(() => {});
+      return cachedAnswer;
+    }
+    return null;
+  }
+
+  // Mark this question as processed
+  processedQuestions.add(questionHash);
+
+  try {
+    console.log('📚 Querying RAG API for question:', question);
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), RAG_QUERY_TIMEOUT_MS);
+
+    const response = await fetch(`${ragBaseUrl}/rag/query`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        query: question,
+        top_k: 3,
+        use_hyde: true,
+        use_rerank: true
+      }),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!response.ok) {
+      console.error('❌ RAG API error:', response.status, response.statusText);
+      const errorResponse = {
+        query: question,
+        answer: '',
+        sources: [],
+        noAnswerFound: true,
+        error: `Knowledge base error (${response.status})`
+      };
+
+      ragAnswers[questionHash] = errorResponse;
+
+      const questionEntry = detectedQuestions.find(q => q.hash === questionHash);
+      if (questionEntry) {
+        questionEntry.answer = '';
+        questionEntry.sources = [];
+        questionEntry.noAnswerFound = true;
+        questionEntry.error = errorResponse.error;
+        questionEntry.answerReceived = true;
+      }
+
+      chrome.runtime.sendMessage({
+        type: 'RAG_ANSWER_READY',
+        data: {
+          question,
+          questionHash,
+          ragResponse: errorResponse
+        }
+      }).catch(() => {});
+
+      return errorResponse;
+    }
+
+    const data = await response.json();
+    
+    if (!data.answer || data.answer.trim().length === 0) {
+      console.warn('⚠️ RAG API returned empty answer for question:', question);
+      const noAnswerResponse = {
+        query: data.query || question,
+        answer: '',
+        sources: normalizeSourceList(data.sources || []),
+        noAnswerFound: true,
+        error: null
+      };
+
+      ragAnswers[questionHash] = noAnswerResponse;
+
+      const questionEntry = detectedQuestions.find(q => q.hash === questionHash);
+      if (questionEntry) {
+        questionEntry.answer = '';
+        questionEntry.sources = noAnswerResponse.sources;
+        questionEntry.noAnswerFound = true;
+        questionEntry.answerReceived = true;
+      }
+
+      chrome.runtime.sendMessage({
+        type: 'RAG_ANSWER_READY',
+        data: {
+          question,
+          questionHash,
+          ragResponse: noAnswerResponse
+        }
+      }).catch(() => {});
+
+      return noAnswerResponse;
+    }
+
+    console.log('✅ RAG API returned answer');
+    
+    // Cache the answer
+    const ragResponse = {
+      query: data.query,
+      answer: data.answer,
+      sources: normalizeSourceList(data.sources || []),
+      retrieval_method: data.retrieval_method || 'unknown',
+      reranked: data.reranked || false,
+      noAnswerFound: false,
+      error: null
+    };
+
+    ragAnswers[questionHash] = ragResponse;
+
+    // Update detected questions with the answer
+    const questionEntry = detectedQuestions.find(q => q.hash === questionHash);
+    if (questionEntry) {
+      questionEntry.answer = ragResponse.answer;
+      questionEntry.sources = ragResponse.sources;
+      questionEntry.answerReceived = true;
+    }
+
+    // Send to popup
+    chrome.runtime.sendMessage({
+      type: 'RAG_ANSWER_READY',
+      data: {
+        question: question,
+        questionHash: questionHash,
+        ragResponse: ragResponse
+      }
+    }).catch(() => {});
+
+    return ragResponse;
+
+  } catch (err) {
+    console.error('❌ RAG API query failed:', err.message);
+
+    const failureResponse = {
+      query: question,
+      answer: '',
+      sources: [],
+      noAnswerFound: true,
+      error: err.name === 'AbortError' ? 'Knowledge base search timed out' : 'Unable to reach knowledge base'
+    };
+
+    ragAnswers[questionHash] = failureResponse;
+
+    const questionEntry = detectedQuestions.find(q => q.hash === questionHash);
+    if (questionEntry) {
+      questionEntry.answer = '';
+      questionEntry.sources = [];
+      questionEntry.noAnswerFound = true;
+      questionEntry.error = failureResponse.error;
+      questionEntry.answerReceived = true;
+    }
+
+    chrome.runtime.sendMessage({
+      type: 'RAG_ANSWER_READY',
+      data: {
+        question,
+        questionHash,
+        ragResponse: failureResponse
+      }
+    }).catch(() => {});
+
+    return failureResponse;
+  }
+}
+
+// Detect new questions and query RAG API
+function detectAndQueryNewQuestions(latestTranscript = '') {
+  if (fullTranscript.length === 0 && (!latestTranscript || latestTranscript.trim().length === 0)) {
+    return;
+  }
+
+  // Extract all questions from full transcript and latest transcript text
+  const allQuestions = [];
+  fullTranscript.forEach(t => {
+    const questionsInText = extractQuestionsFromText(t.text);
+    allQuestions.push(...questionsInText);
+  });
+
+  if (latestTranscript && latestTranscript.trim().length > 0) {
+    allQuestions.push(...extractQuestionsFromText(latestTranscript));
+  }
+
+  // Remove duplicates and create question objects
+  const uniqueQuestions = [...new Set(allQuestions)];
+  const newQuestions = [];
+
+  uniqueQuestions.forEach(question => {
+    const hash = hashQuestion(question);
+    
+    // Check if this question is already in our detected questions
+    const existingQuestion = detectedQuestions.find(q => q.hash === hash);
+    if (!existingQuestion) {
+      // Add to detected questions
+      detectedQuestions.push({
+        text: question,
+        hash: hash,
+        timestamp: Date.now(),
+        answer: null,
+        sources: []
+      });
+      newQuestions.push({
+        text: question,
+        hash: hash,
+        timestamp: Date.now()
+      });
+    }
+  });
+
+  // Send detected questions to popup
+  if (newQuestions.length > 0) {
+    console.log(`📋 Sending ${newQuestions.length} detected questions to popup`);
+    chrome.runtime.sendMessage({
+      type: 'QUESTIONS_DETECTED',
+      data: {
+        questions: newQuestions,
+        allQuestions: detectedQuestions.map(q => ({
+          text: q.text,
+          hash: q.hash,
+          timestamp: q.timestamp,
+          answer: q.answer,
+          sources: q.sources || [],
+          noAnswerFound: !!q.noAnswerFound,
+          error: q.error || null,
+          answerReceived: !!q.answerReceived
+        }))
+      }
+    }).catch(() => {});
+  }
+
 }
