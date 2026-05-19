@@ -820,9 +820,8 @@ function handleTranscription(data) {
     return;
   }
 
-  // Popup-side fallback: detect questions from every transcript chunk and show them in UI.
-  const locallyDetectedQuestions = extractQuestionsFromTranscriptLocal(transcript);
-  locallyDetectedQuestions.forEach(q => ensureQuestionInUI(q));
+  // Question detection is now handled entirely by background.js with two-stage pending/confirmed system
+  // No local extraction here to avoid duplicates or partial questions
   
   // Make sure section is visible
   if (!transcriptionSection.classList.contains('active')) {

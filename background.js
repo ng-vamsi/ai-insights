@@ -29,6 +29,12 @@ let ragAnswers = {}; // Store answers keyed by question hash
 let detectedQuestions = []; // Store all questions detected in conversation with their hashes
 let pendingQuestionPrefix = ''; // Holds split question starters across transcript chunks
 
+// Two-stage question detection: pending → confirmed
+let pendingCandidates = {}; // { candidateHash: { text, firstSeenAt, lastUpdatedAt, confidence, extendCount } }
+const STABILITY_WINDOW_MS = 1500; // Hold candidate for 1.5s before confirming
+const CONFIDENCE_THRESHOLD = 0.6; // Score 0-1; >= threshold = auto-confirm
+const AI_VALIDATION_THRESHOLD = 0.4; // 0.4-0.6 = ambiguous, send to AI
+
 function normalizeSourceList(sources) {
   if (!Array.isArray(sources)) {
     return [];
@@ -47,33 +53,179 @@ function normalizeSourceList(sources) {
   }).filter(Boolean);
 }
 
-function isLikelyCompleteQuestion(candidate) {
-  if (!candidate) return false;
+function scoreQuestionConfidence(candidate) {
+  // Returns 0-1 confidence score; higher = more likely complete question
+  if (!candidate) return 0;
 
   const normalized = candidate.replace(/[?]+$/g, '').trim();
   const words = normalized.split(/\s+/).filter(Boolean);
+  let score = 0;
 
-  if (words.length < 4) {
-    return false;
-  }
+  // Word count: 4 is min, 6+ is strong
+  if (words.length < 4) return 0;
+  score += Math.min(0.2, (words.length - 4) / 10); // Up to 0.2 for word count
 
+  // Ends with question mark: strong signal
+  if (candidate.endsWith('?')) score += 0.25;
+
+  // Starts with interrogative or intent pattern
+  const interrogatives = /^(who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|might|have|has|had|which)\b/i;
+  const intents = /^(i want to know|i wanted to know|i want to understand|can you tell me|tell me|i'm curious|i am curious)/i;
+  if (interrogatives.test(normalized) || intents.test(normalized)) score += 0.2;
+
+  // Contains verb-like token
+  const verbLike = /\b(is|are|am|was|were|has|have|had|do|does|did|will|would|could|can|should|may|might|use|work|think|know|understand|tell|ask|need|want|make|get|go|come|see|take|give|find|show|say)\b/i;
+  if (verbLike.test(normalized)) score += 0.25;
+
+  // Penalty: ends with stop word
   const lastWord = (words[words.length - 1] || '').toLowerCase();
-  const trailingStopWords = new Set([
-    'of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon', 'as', 'and', 'or', 'but',
-    'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether'
-  ]);
+  const stopWords = new Set(['of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon', 'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether']);
+  if (stopWords.has(lastWord)) score -= 0.3;
 
-  if (trailingStopWords.has(lastWord)) {
-    return false;
-  }
-
+  // Penalty: known incomplete stems
   const lowered = normalized.toLowerCase();
-  if (lowered === 'what happens' || lowered === 'what happens in the event of') {
-    return false;
-  }
+  if (lowered === 'what happens' || lowered === 'what happens in the event of' || lowered === 'can you tell me if') score -= 0.2;
 
-  return true;
+  return Math.max(0, Math.min(1, score));
 }
+
+function isLikelyCompleteQuestion(candidate) {
+  // Strict local-only check: requires high confidence or explicit question mark
+  const score = scoreQuestionConfidence(candidate);
+  return score >= CONFIDENCE_THRESHOLD || candidate.trim().endsWith('?');
+}
+
+function hashCandidate(text) {
+  let hash = 0;
+  const str = (text || '').toLowerCase().trim();
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return 'cand_' + Math.abs(hash).toString(36);
+}
+
+// Async AI validator for ambiguous candidates
+async function validateQuestionWithAI(candidate) {
+  const result = await chrome.storage.local.get(['openaiApiKey']);
+  const apiKey = result.openaiApiKey;
+  
+  if (!apiKey) {
+    console.log('⚠️ OpenAI API not configured, skipping AI validation');
+    return { isQuestion: true, cleanedText: candidate };
+  }
+  
+  try {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a question validator. Respond ONLY with JSON: {\"isQuestion\": boolean, \"cleanedText\": \"string\"}'
+          },
+          {
+            role: 'user',
+            content: `Is this a complete question? \"${candidate}\"`
+          }
+        ],
+        temperature: 0,
+        max_tokens: 50
+      })
+    });
+    
+    if (!response.ok) {
+      console.warn('⚠️ AI validation failed:', response.status);
+      return { isQuestion: true, cleanedText: candidate };
+    }
+    
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || '{}';
+    const parsed = JSON.parse(content);
+    return parsed;
+  } catch (err) {
+    console.error('❌ AI validation exception:', err.message);
+    return { isQuestion: true, cleanedText: candidate };
+  }
+}
+
+// Confirm pending candidates that have reached stability window
+async function confirmPendingCandidates() {
+  const now = Date.now();
+  const newlyConfirmed = [];
+  
+  for (const [hash, candidate] of Object.entries(pendingCandidates)) {
+    const age = now - candidate.firstSeenAt;
+    const stability = now - candidate.lastUpdatedAt;
+    
+    // Confirm if: stable for window OR high confidence
+    const shouldConfirm = stability >= STABILITY_WINDOW_MS || candidate.confidence >= CONFIDENCE_THRESHOLD;
+    
+    if (shouldConfirm) {
+      // If mid-band confidence, optionally validate with AI
+      if (candidate.confidence >= AI_VALIDATION_THRESHOLD && candidate.confidence < CONFIDENCE_THRESHOLD) {
+        console.log('🔄 Ambiguous candidate, validating with AI:', candidate.text);
+        const validation = await validateQuestionWithAI(candidate.text);
+        if (!validation.isQuestion) {
+          console.log('❌ AI rejected:', candidate.text);
+          delete pendingCandidates[hash];
+          continue;
+        }
+        candidate.text = validation.cleanedText || candidate.text;
+      }
+      
+      const newQuestion = {
+        text: candidate.text.endsWith('?') ? candidate.text : `${candidate.text}?`,
+        hash: hashQuestion(candidate.text),
+        timestamp: Date.now(),
+        answer: null,
+        sources: [],
+        noAnswerFound: false,
+        error: null,
+        answerReceived: false
+      };
+      
+      // Check if this question already exists
+      const exists = detectedQuestions.some(q => q.hash === newQuestion.hash);
+      if (!exists) {
+        detectedQuestions.push(newQuestion);
+        newlyConfirmed.push(newQuestion);
+        console.log('✅ Confirmed question:', newQuestion.text);
+      }
+      
+      delete pendingCandidates[hash];
+    }
+  }
+  
+  // Broadcast newly confirmed questions
+  if (newlyConfirmed.length > 0) {
+    chrome.runtime.sendMessage({
+      type: 'QUESTIONS_DETECTED',
+      data: {
+        questions: newlyConfirmed,
+        allQuestions: detectedQuestions.map(q => ({
+          text: q.text,
+          hash: q.hash,
+          timestamp: q.timestamp,
+          answer: q.answer,
+          sources: q.sources || [],
+          noAnswerFound: !!q.noAnswerFound,
+          error: q.error || null,
+          answerReceived: !!q.answerReceived
+        }))
+      }
+    }).catch(() => {});
+  }
+}
+
+// Periodically confirm pending candidates (every 500ms)
+setInterval(confirmPendingCandidates, 500);
 
 // Load saved API keys from storage on startup
 chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey', 'ragBaseUrl'], (result) => {
@@ -1692,18 +1844,16 @@ function hashQuestion(question) {
 
 function extractQuestionsFromText(text) {
   if (!text || text.trim().length === 0) {
-    return [];
+    return;
   }
 
   const cleaned = text.replace(/\s+/g, ' ').trim();
-  const questions = [];
 
   // Explicit question mark detection
   const markedQuestions = [...cleaned.matchAll(/[^.?!\n]*\?/g)]
     .map(match => match[0].trim())
-    .filter(q => q.length >= 8)
-    .filter(isLikelyCompleteQuestion);
-  questions.push(...markedQuestions);
+    .filter(q => q.length >= 8);
+  markedQuestions.forEach(q => addCandidateToPending(q));
 
   // Heuristic detection for spoken questions without '?'
   const prefixes = /^(who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|might|have|has|had|which)\b/i;
@@ -1732,14 +1882,13 @@ function extractQuestionsFromText(text) {
   chunks.forEach(chunk => {
     const looksLikeQuestion = prefixes.test(chunk) || intentQuestionPatterns.some(pattern => pattern.test(chunk));
     if (looksLikeQuestion && chunk.length >= 8) {
-      // If chunk ends with connector words (e.g., "I want to know how"), keep it as pending.
       if (trailingConnector.test(chunk) && !/[.?!]$/.test(chunk)) {
+        // Ends with connector: hold for next chunk
         pendingQuestionPrefix = chunk;
       } else {
+        // Looks complete: add to pending queue
         const normalized = chunk.endsWith('?') ? chunk : `${chunk}?`;
-        if (isLikelyCompleteQuestion(normalized)) {
-          questions.push(normalized);
-        }
+        addCandidateToPending(normalized);
       }
     }
   });
@@ -1748,8 +1897,33 @@ function extractQuestionsFromText(text) {
   if ((prefixes.test(cleaned) || intentQuestionPatterns.some(pattern => pattern.test(cleaned))) && trailingConnector.test(cleaned) && !/[.?!]$/.test(cleaned)) {
     pendingQuestionPrefix = cleaned;
   }
+}
 
-  return [...new Set(questions.map(q => q.replace(/\s+/g, ' ').trim()))];
+function addCandidateToPending(candidateText) {
+  if (!candidateText || candidateText.trim().length === 0) return;
+  
+  const normalized = candidateText.trim();
+  const hash = hashCandidate(normalized);
+  const confidence = scoreQuestionConfidence(normalized);
+  
+  const now = Date.now();
+  if (pendingCandidates[hash]) {
+    // Update existing candidate: extend if it's being re-confirmed
+    pendingCandidates[hash].lastUpdatedAt = now;
+    pendingCandidates[hash].extendCount = (pendingCandidates[hash].extendCount || 0) + 1;
+    pendingCandidates[hash].confidence = Math.max(pendingCandidates[hash].confidence, confidence);
+    console.log('📝 Extended pending candidate:', normalized, 'score:', pendingCandidates[hash].confidence);
+  } else {
+    // New candidate
+    pendingCandidates[hash] = {
+      text: normalized,
+      firstSeenAt: now,
+      lastUpdatedAt: now,
+      confidence: confidence,
+      extendCount: 0
+    };
+    console.log('🔔 Added pending candidate:', normalized, 'confidence:', confidence);
+  }
 }
 
 // Query the RAG API for a question
@@ -1801,8 +1975,10 @@ async function queryRAGAPI(question) {
       body: JSON.stringify({
         query: question,
         top_k: 3,
-        use_hyde: true,
-        use_rerank: true
+        // use_hyde: true,
+        // use_rerank: true
+         use_hyde: false,
+        use_rerank: false
       }),
       signal: controller.signal
     });
@@ -1951,62 +2127,16 @@ function detectAndQueryNewQuestions(latestTranscript = '') {
     return;
   }
 
-  // Extract all questions from full transcript and latest transcript text
-  const allQuestions = [];
+  // Extract candidates from full transcript and latest transcript
+  // This adds candidates to pendingCandidates, doesn't return them
   fullTranscript.forEach(t => {
-    const questionsInText = extractQuestionsFromText(t.text);
-    allQuestions.push(...questionsInText);
+    extractQuestionsFromText(t.text);
   });
 
   if (latestTranscript && latestTranscript.trim().length > 0) {
-    allQuestions.push(...extractQuestionsFromText(latestTranscript));
+    extractQuestionsFromText(latestTranscript);
   }
 
-  // Remove duplicates and create question objects
-  const uniqueQuestions = [...new Set(allQuestions)];
-  const newQuestions = [];
-
-  uniqueQuestions.forEach(question => {
-    const hash = hashQuestion(question);
-    
-    // Check if this question is already in our detected questions
-    const existingQuestion = detectedQuestions.find(q => q.hash === hash);
-    if (!existingQuestion) {
-      // Add to detected questions
-      detectedQuestions.push({
-        text: question,
-        hash: hash,
-        timestamp: Date.now(),
-        answer: null,
-        sources: []
-      });
-      newQuestions.push({
-        text: question,
-        hash: hash,
-        timestamp: Date.now()
-      });
-    }
-  });
-
-  // Send detected questions to popup
-  if (newQuestions.length > 0) {
-    console.log(`📋 Sending ${newQuestions.length} detected questions to popup`);
-    chrome.runtime.sendMessage({
-      type: 'QUESTIONS_DETECTED',
-      data: {
-        questions: newQuestions,
-        allQuestions: detectedQuestions.map(q => ({
-          text: q.text,
-          hash: q.hash,
-          timestamp: q.timestamp,
-          answer: q.answer,
-          sources: q.sources || [],
-          noAnswerFound: !!q.noAnswerFound,
-          error: q.error || null,
-          answerReceived: !!q.answerReceived
-        }))
-      }
-    }).catch(() => {});
-  }
-
+  // confirmPendingCandidates runs on a timer and will promote ready candidates
+  // No need to broadcast questions here anymore
 }
