@@ -1,4 +1,6 @@
 // background.js
+import { ENV } from './env.js';
+
 console.log('🚀 Background service worker loaded');
 
 // Storage for audio recording
@@ -6,7 +8,7 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartTime = null;
 let recordingTabId = null;
-let deepgramApiKey = null;
+let deepgramApiKey = (ENV.DEEPGRAM_API_KEY || '').trim();
 let deepgramSocket = null;
 let deepgramConnected = false;
 
@@ -17,12 +19,14 @@ let detectedTopics = [];
 let detectedIntents = [];
 
 // LLM Configuration for real-time insights
-let openaiApiKey = null;
+let openaiApiKey = (ENV.OPENROUTER_API_KEY || '').trim();
+const LLM_CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const LLM_MODEL = 'openai/gpt-4o-mini';
 let lastInsightGenerationTime = 0;
 const INSIGHT_GENERATION_INTERVAL = 10000; // Generate insights every 10 seconds (batch for cost efficiency)
 
 // RAG Configuration for document search
-let ragBaseUrl = 'http://localhost:8000';
+let ragBaseUrl = (ENV.RAG_BASE_URL || 'http://localhost:8000').trim();
 const RAG_QUERY_TIMEOUT_MS = 300000; // Wait up to 5 minutes for local RAG backend responses
 let processedQuestions = new Set(); // Track which questions we've already queried
 let ragAnswers = {}; // Store answers keyed by question hash
@@ -108,23 +112,22 @@ function hashCandidate(text) {
 
 // Async AI validator for ambiguous candidates
 async function validateQuestionWithAI(candidate) {
-  const result = await chrome.storage.local.get(['openaiApiKey']);
-  const apiKey = result.openaiApiKey;
+  const apiKey = openaiApiKey;
   
   if (!apiKey) {
-    console.log('⚠️ OpenAI API not configured, skipping AI validation');
+    console.log('⚠️ OpenRouter API key not configured, skipping AI validation');
     return { isQuestion: true, cleanedText: candidate };
   }
   
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-3.5-turbo',
+        model: LLM_MODEL,
         messages: [
           {
             role: 'system',
@@ -227,52 +230,11 @@ async function confirmPendingCandidates() {
 // Periodically confirm pending candidates (every 500ms)
 setInterval(confirmPendingCandidates, 500);
 
-// Load saved API keys from storage on startup
-chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey', 'ragBaseUrl'], (result) => {
-  if (result.openaiApiKey) {
-    openaiApiKey = result.openaiApiKey;
-    console.log('🔑 OpenAI API key loaded from storage, length:', openaiApiKey.length);
-  }
-  if (result.deepgramApiKey) {
-    deepgramApiKey = result.deepgramApiKey;
-    console.log('🔑 Deepgram API key loaded from storage, length:', deepgramApiKey.length);
-  }
-  if (result.ragBaseUrl) {
-    ragBaseUrl = result.ragBaseUrl;
-    console.log('🔗 RAG API base URL loaded from storage:', ragBaseUrl);
-  }
-});
+console.log('🔧 API config loaded from env.js');
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     
     console.log('📨 Message received in background.js:', message )
-
-  // Handle SET_DEEPGRAM_KEY
-  if (message.type === 'SET_DEEPGRAM_KEY') {
-    deepgramApiKey = message.apiKey;
-    // Also save to storage so it persists across service worker restarts
-    chrome.storage.local.set({ deepgramApiKey: message.apiKey });
-    console.log('🔑 Deepgram API key configured and saved to storage');
-    return false;
-  }
-
-  // Handle SET_OPENAI_KEY
-  if (message.type === 'SET_OPENAI_KEY') {
-    openaiApiKey = message.apiKey;
-    // Also save to storage so it persists across service worker restarts
-    chrome.storage.local.set({ openaiApiKey: message.apiKey });
-    console.log('🔑 OpenAI API key configured and saved to storage');
-    return false;
-  }
-
-  // Handle SET_RAG_URL
-  if (message.type === 'SET_RAG_URL') {
-    ragBaseUrl = message.ragUrl;
-    // Also save to storage so it persists across service worker restarts
-    chrome.storage.local.set({ ragBaseUrl: message.ragUrl });
-    console.log('🔗 RAG API URL configured and saved to storage:', ragBaseUrl);
-    return false;
-  }
 
   // Handle INIT_RECORDING with async operations
   if (message.type === 'INIT_RECORDING') {
@@ -1294,11 +1256,10 @@ function generateInsights() {
 async function handleGenerateAISummary(transcript) {
   console.log('🤖 Generating AI summary for transcript length:', transcript.length);
   
-  // Check if OpenAI API key is available
-  const result = await chrome.storage.local.get(['openaiApiKey']);
-  const openaiApiKey = result.openaiApiKey;
+  // Check if OpenRouter API key is available
+  const configuredApiKey = openaiApiKey;
   
-  if (!openaiApiKey) {
+  if (!configuredApiKey) {
     // Fallback: Generate a rule-based summary
     const fallbackSummary = generateFallbackSummary(transcript);
     chrome.runtime.sendMessage({
@@ -1309,15 +1270,15 @@ async function handleGenerateAISummary(transcript) {
   }
   
   try {
-    // Call OpenAI API
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    // Call OpenRouter API
+    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${openaiApiKey}`
+        'Authorization': `Bearer ${configuredApiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: LLM_MODEL,
         messages: [{
           role: 'system',
           content: `You are an expert sales coach. A sales rep just finished a call and needs your immediate, specific guidance. Analyze the transcript and respond using these exact markdown sections:
@@ -1472,7 +1433,7 @@ async function generateLiveInsightsWithLLM() {
 
 async function callOpenAIForLiveInsights(transcript) {
   if (!openaiApiKey) {
-    throw new Error('OpenAI API key not configured');
+    throw new Error('OpenRouter API key not configured');
   }
   
   const systemPrompt = `You are a real-time sales intelligence analyst for high-stakes sales conversations. Your job is NOT to summarize or repeat the transcript. Instead:
@@ -1507,14 +1468,14 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
 }`;
 
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${openaiApiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: LLM_MODEL,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Analyze this sales conversation segment:\n\n${transcript}` }
@@ -1526,7 +1487,7 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
     
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(`OpenAI API error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
+      throw new Error(`OpenRouter API error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
     }
     
     const data = await response.json();
@@ -1556,7 +1517,7 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
       riskLevel: insights.riskLevel || 'medium'
     };
   } catch (err) {
-    console.error('❌ OpenAI API call failed:', err);
+    console.error('❌ OpenRouter API call failed:', err);
     throw err;
   }
 }
@@ -1567,14 +1528,14 @@ async function analyzeTextSentimentWithLLM(text) {
   }
   
   try {
-    const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${openaiApiKey}`
       },
       body: JSON.stringify({
-        model: 'gpt-4o-mini',
+        model: LLM_MODEL,
         messages: [
           { role: 'system', content: 'Respond with ONLY one word: "positive", "neutral", or "negative"' },
           { role: 'user', content: `Sentiment of: "${text}"` }

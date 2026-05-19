@@ -476,28 +476,6 @@
 <body>
   <h3>Sales AI Listener</h3>
 
-  <div id="apiKeySection" class="api-key-section">
-    <div class="api-key-label">Deepgram API Key (Required):</div>
-    <div class="api-key-input">
-      <input type="password" id="apiKeyInput" placeholder="Enter your Deepgram API key">
-      <button id="saveApiKeyBtn">Save</button>
-    </div>
-    <details style="margin-top: 5px;">
-      <summary style="font-size: 10px; color: #666; cursor: pointer;">Optional: OpenAI for Deep Analysis tab</summary>
-      <div class="api-key-input" style="margin-top: 5px;">
-        <input type="password" id="openaiKeyInput" placeholder="OpenAI API key (optional)" style="font-size: 11px;">
-        <button id="saveOpenaiKeyBtn" style="font-size: 11px;">Save</button>
-      </div>
-    </details>
-    <details style="margin-top: 5px;">
-      <summary style="font-size: 10px; color: #666; cursor: pointer;">Optional: RAG API for Document Search</summary>
-      <div class="api-key-input" style="margin-top: 5px;">
-        <input type="text" id="ragUrlInput" placeholder="RAG API URL (e.g., http://localhost:8000)" style="font-size: 11px;">
-        <button id="saveRagUrlBtn" style="font-size: 11px;">Save</button>
-      </div>
-    </details>
-  </div>
-
   <div class="controls">
     <button id="startBtn">Start Recording</button>
     <button id="stopBtn" disabled>Stop Recording</button>
@@ -554,6 +532,6 @@
     </div>
   </div>
 
-  <script src="popup.js"></script>
+  <script type="module" src="popup.js"></script>
 </body>
 </html>

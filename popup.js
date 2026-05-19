@@ -1,4 +1,6 @@
 // popup.js
+import { ENV } from './env.js';
+
 const startBtn            = document.getElementById('startBtn');
 const stopBtn             = document.getElementById('stopBtn');
 const downloadBtn         = document.getElementById('downloadBtn');
@@ -9,13 +11,6 @@ const durationSpan        = document.getElementById('duration');
 const chunksSpan          = document.getElementById('chunks');
 const sizeSpan            = document.getElementById('size');
 const audioPlayer         = document.getElementById('audioPlayer');
-const apiKeyInput         = document.getElementById('apiKeyInput');
-const saveApiKeyBtn       = document.getElementById('saveApiKeyBtn');
-const openaiKeyInput      = document.getElementById('openaiKeyInput');
-const saveOpenaiKeyBtn    = document.getElementById('saveOpenaiKeyBtn');
-const ragUrlInput         = document.getElementById('ragUrlInput');
-const saveRagUrlBtn       = document.getElementById('saveRagUrlBtn');
-const apiKeySection       = document.getElementById('apiKeySection');
 const transcriptionSection= document.getElementById('transcriptionSection');
 const transcriptContainer = document.getElementById('transcriptContainer');
 const insightsSection     = document.getElementById('insightsSection');
@@ -41,9 +36,8 @@ tabInsights.addEventListener('click', () => switchTab('insights'));
 tabDeep.addEventListener('click',     () => switchTab('deep'));
 
 let isRecording = false;
-let deepgramApiKey = null;
+let deepgramApiKey = (ENV.DEEPGRAM_API_KEY || '').trim();
 let currentTranscriptText = '';
-let apiKeysLoaded = false; // Track if storage has been loaded
 let ragAnswersMap = {}; // Store RAG answers keyed by questionHash
 let questionsMap = {}; // Store all detected questions with their data
 let pendingLocalQuestionPrefix = ''; // Holds split question starters across transcript chunks
@@ -345,149 +339,7 @@ chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
   });
 });
 
-// Load API key on startup (MUST complete before recording can start)
-chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey', 'ragBaseUrl'], (result) => {
-  if (result.deepgramApiKey) {
-    deepgramApiKey = result.deepgramApiKey;
-    console.log('✅ Deepgram API key loaded from storage, length:', deepgramApiKey.length);
-    apiKeyInput.value = '••••••••••••';
-    apiKeyInput.disabled = true;
-    apiKeySection.classList.add('configured');
-    saveApiKeyBtn.textContent = 'Change';
-  } else {
-    console.warn('⚠️ No Deepgram API key found in storage');
-  }
-  
-  if (result.openaiApiKey) {
-    openaiKeyInput.value = '••••••••••••';
-    openaiKeyInput.disabled = true;
-    saveOpenaiKeyBtn.textContent = 'Change';
-  }
-
-
-  
-  // Mark that API keys have been loaded
-  apiKeysLoaded = true;
-  console.log('✅ API keys loading complete');
-});
-
-// Save API key
-saveApiKeyBtn.addEventListener('click', () => {
-  if (apiKeySection.classList.contains('configured')) {
-    // Allow editing
-    apiKeyInput.value = '';
-    apiKeyInput.disabled = false;
-    apiKeyInput.focus();
-    apiKeySection.classList.remove('configured');
-    saveApiKeyBtn.textContent = 'Save';
-  } else {
-    // Save new key
-    const key = apiKeyInput.value.trim();
-    if (key.length < 10) {
-      alert('Please enter a valid Deepgram API key');
-      return;
-    }
-    
-    chrome.storage.local.set({ deepgramApiKey: key }, () => {
-      deepgramApiKey = key;
-      apiKeyInput.value = '••••••••••••';
-      apiKeyInput.disabled = true;
-      apiKeySection.classList.add('configured');
-      saveApiKeyBtn.textContent = 'Change';
-      statusDiv.textContent = 'API key saved successfully!';
-      
-      // Notify background about the new key
-      chrome.runtime.sendMessage({ 
-        type: 'SET_DEEPGRAM_KEY', 
-        apiKey: key 
-      });
-    });
-  }
-});
-
-// Save OpenAI API key (optional)
-saveOpenaiKeyBtn.addEventListener('click', () => {
-  if (openaiKeyInput.disabled) {
-    // Allow editing
-    openaiKeyInput.value = '';
-    openaiKeyInput.disabled = false;
-    openaiKeyInput.focus();
-    saveOpenaiKeyBtn.textContent = 'Save';
-  } else {
-    // Save new key
-    const key = openaiKeyInput.value.trim();
-    if (key.length > 0 && key.length < 20) {
-      alert('Please enter a valid OpenAI API key');
-      return;
-    }
-    
-    if (key.length === 0) {
-      // Clear the key
-      chrome.storage.local.remove('openaiApiKey', () => {
-        openaiKeyInput.value = '';
-        openaiKeyInput.disabled = false;
-        saveOpenaiKeyBtn.textContent = 'Save';
-        statusDiv.textContent = 'OpenAI key removed';
-      });
-      return;
-    }
-    
-    chrome.storage.local.set({ openaiApiKey: key }, () => {
-      openaiKeyInput.value = '••••••••••••';
-      openaiKeyInput.disabled = true;
-      saveOpenaiKeyBtn.textContent = 'Change';
-      statusDiv.textContent = 'OpenAI key saved! You can now use AI-powered live insights.';
-      
-      // Notify background about the new key
-      chrome.runtime.sendMessage({ 
-        type: 'SET_OPENAI_KEY', 
-        apiKey: key 
-      });
-    });
-  }
-});
-
-// Save RAG API URL
-saveRagUrlBtn.addEventListener('click', () => {
-  if (ragUrlInput.disabled) {
-    // Allow editing
-    ragUrlInput.value = '';
-    ragUrlInput.disabled = false;
-    ragUrlInput.focus();
-    saveRagUrlBtn.textContent = 'Save';
-  } else {
-    // Save new URL
-    const url = ragUrlInput.value.trim();
-    if (url.length === 0) {
-      // Clear the URL
-      chrome.storage.local.remove('ragBaseUrl', () => {
-        ragUrlInput.value = '';
-        ragUrlInput.disabled = false;
-        saveRagUrlBtn.textContent = 'Save';
-        statusDiv.textContent = 'RAG API URL removed';
-      });
-      return;
-    }
-
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      alert('Please enter a valid URL (http://... or https://...)');
-      return;
-    }
-    
-    chrome.storage.local.set({ ragBaseUrl: url }, () => {
-      ragUrlInput.value = url;
-      ragUrlInput.disabled = true;
-      saveRagUrlBtn.textContent = 'Change';
-      statusDiv.textContent = 'RAG API URL saved! Document search is now enabled.';
-      
-      // Notify background about the new URL
-      chrome.runtime.sendMessage({ 
-        type: 'SET_RAG_URL', 
-        ragUrl: url 
-      });
-    });
-  }
-});
+console.log('✅ Loaded API configuration from env.js');
 
 // Listen for recording stats updates and responses from background
 chrome.runtime.onMessage.addListener((message) => {
@@ -618,32 +470,10 @@ startBtn.addEventListener('click', async () => {
     return;
   }
   
-  // Wait for API keys to load from storage (max 2 seconds)
-  if (!apiKeysLoaded) {
-    console.log('⏳ Waiting for API keys to load from storage...');
-    statusDiv.innerHTML = "Status: Loading API keys...";
-    startBtn.disabled = true;
-    
-    // Wait up to 2 seconds for API keys to load
-    let waited = 0;
-    while (!apiKeysLoaded && waited < 2000) {
-      await new Promise(resolve => setTimeout(resolve, 100));
-      waited += 100;
-    }
-    
-    if (!apiKeysLoaded) {
-      console.error('❌ API keys failed to load from storage');
-      statusDiv.innerHTML = "Status: Failed to load API keys";
-      startBtn.disabled = false;
-      return;
-    }
-  }
-  
   // Check if API key is actually configured
   if (!deepgramApiKey || deepgramApiKey.length < 20) {
-    statusDiv.innerHTML = "Status: Please configure a valid Deepgram API key first";
+    statusDiv.innerHTML = "Status: Missing Deepgram key in env.js";
     console.error('❌ Invalid API key. Length:', deepgramApiKey?.length || 0);
-    apiKeyInput.focus();
     startBtn.disabled = false;
     return;
   }
