@@ -132,7 +132,10 @@ function upsertQuestion(questionText, incoming = {}) {
       ...questionsMap[newHash],
       ...incoming,
       text: questionsMap[newHash].text || textWithMark,
-      hash: newHash
+      hash: newHash,
+      answerExpanded: incoming.answerExpanded !== undefined
+        ? incoming.answerExpanded
+        : (questionsMap[newHash].answerExpanded !== undefined ? questionsMap[newHash].answerExpanded : true)
     };
     return newHash;
   }
@@ -156,7 +159,10 @@ function upsertQuestion(questionText, incoming = {}) {
         noAnswerFound: !!incoming.noAnswerFound,
         error: incoming.error || null,
         answerReceived: !!incoming.answerReceived,
-        ragTriggered: false
+        ragTriggered: false,
+        answerExpanded: incoming.answerExpanded !== undefined
+          ? incoming.answerExpanded
+          : (preserved.answerExpanded !== undefined ? preserved.answerExpanded : true)
       };
       return newHash;
     }
@@ -179,9 +185,19 @@ function upsertQuestion(questionText, incoming = {}) {
     noAnswerFound: !!incoming.noAnswerFound,
     error: incoming.error || null,
     answerReceived: !!incoming.answerReceived,
-    ragTriggered: !!incoming.ragTriggered
+    ragTriggered: !!incoming.ragTriggered,
+    answerExpanded: incoming.answerExpanded !== undefined ? incoming.answerExpanded : true
   };
   return newHash;
+}
+
+function escapeHtml(text) {
+  return String(text || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function extractQuestionsFromTranscriptLocal(text) {
@@ -1065,7 +1081,8 @@ function displayRAGAnswer(data) {
     noAnswerFound: !!safeResponse.noAnswerFound,
     error: safeResponse.error || null,
     answerReceived: true,
-    ragTriggered: false
+    ragTriggered: false,
+    answerExpanded: true
   });
 
   if (!targetHash) {
@@ -1094,13 +1111,33 @@ function displayQuestions() {
   // Display each question with its answer
   sortedQuestions.forEach((q, idx) => {
     const questionIndex = idx + 1;
+    const hasAnswer = !!(q.answer && q.answer.trim().length > 0);
+    const hasBeenQueried = q.ragTriggered || q.answerReceived || q.noAnswerFound || q.error;
+    const cardBackground = hasAnswer ? '#e8f5e9' : '#ffebee';
+    const cardBorder = hasAnswer ? '#2e7d32' : '#c62828';
+    const questionColor = hasAnswer ? '#1b5e20' : '#b71c1c';
+    const answerExpanded = q.answerExpanded !== false;
+    const queryButtonLabel = q.ragTriggered
+      ? 'Querying...'
+      : ((q.answerReceived || q.noAnswerFound || q.error || hasAnswer) ? 'Query RAG Again' : 'Get RAG Answer');
+    const queryButtonDisabled = q.ragTriggered ? 'disabled' : '';
     
     html += `
-      <div style="background: #fff3e0; border-left: 4px solid #ff9800; padding: 12px; margin: 10px 0; border-radius: 4px; position: relative;">
+      <div style="background: ${cardBackground}; border-left: 4px solid ${cardBorder}; padding: 12px; margin: 10px 0; border-radius: 4px; position: relative;">
         <button class="remove-question-btn" data-question-hash="${q.hash}" style="position:absolute; top:8px; right:8px; padding:4px 8px; font-size:11px; border:none; border-radius:3px; background:#ea4335; color:#fff; cursor:pointer; font-weight:600;">Delete</button>
-        <div style="font-size: 13px; font-weight: 500; color: #e65100; margin-bottom: 8px;">
-          Q${questionIndex}: ${q.text}
+        <div style="font-size: 13px; font-weight: 500; color: ${questionColor}; margin-bottom: 8px;">
+          Q${questionIndex}: ${hasBeenQueried ? q.text : ''}
         </div>
+    `;
+    
+    if (!hasBeenQueried) {
+      html += `
+        <textarea class="question-edit-input" data-question-hash="${q.hash}" style="width:100%; min-height:56px; resize:vertical; border:1px solid #d0d7de; border-radius:4px; padding:8px; font-size:12px; color:#202124; box-sizing:border-box;">${escapeHtml(q.text)}</textarea>
+        <div style="font-size:11px; color:#5f6368; margin-top:4px; margin-bottom:8px;">You can edit this question before querying RAG.</div>
+      `;
+    }
+    
+    html += `
         <div style="font-size: 12px; color: #5f6368; margin-left: 12px;">
     `;
 
@@ -1108,9 +1145,15 @@ function displayQuestions() {
     html += `<div style="background: #eef3ff; padding: 8px; border-radius: 4px; margin-bottom: 8px; border-left: 3px solid #3367d6;">`;
     html += `<div style="font-size: 11px; font-weight: 700; color: #1a3f9d; margin-bottom: 4px;">RAG (/rag/query)</div>`;
     if (q.answer && q.answer.trim().length > 0) {
-      const formattedAnswer = renderMarkdown(q.answer);
-      html += `<div style="color:#202124; line-height:1.6;">${formattedAnswer}</div>`;
-      if (q.sources && q.sources.length > 0) {
+      const toggleLabel = answerExpanded ? 'Minimize Answer' : 'Expand Answer';
+      html += `<div style="margin-bottom: 6px;"><button class="toggle-answer-btn" data-question-hash="${q.hash}" style="padding: 4px 8px; font-size: 11px; background:#1b5e20; color:#fff; border:none; border-radius:3px; cursor:pointer;">${toggleLabel}</button></div>`;
+      if (answerExpanded) {
+        const formattedAnswer = renderMarkdown(q.answer);
+        html += `<div style="color:#202124; line-height:1.6;">${formattedAnswer}</div>`;
+      } else {
+        html += `<div style="color:#5f6368; font-style: italic;">Answer minimized</div>`;
+      }
+      if (answerExpanded && q.sources && q.sources.length > 0) {
         html += `<div style="font-size: 11px; color: #5f6368; margin-top: 6px;"><strong>Sources:</strong> ${formatSourcesForDisplay(q.sources).slice(0, 2).join(', ')}</div>`;
       }
     } else if (q.noAnswerFound || q.error) {
@@ -1121,9 +1164,7 @@ function displayQuestions() {
       // After clicking the button, ragTriggered will be true and this won't show
     }
 
-    const buttonLabel = q.answerReceived ? 'Query RAG Again' : (q.ragTriggered ? 'Querying...' : 'Get RAG Answer');
-    const buttonDisabled = q.ragTriggered ? 'disabled' : '';
-    html += `<div style="margin-top: 8px;"><button class="ask-rag-btn" data-question-hash="${q.hash}" ${buttonDisabled} style="padding: 6px 10px; font-size: 12px; background:#3367d6; color:#fff; border:none; border-radius:4px; cursor:pointer;">${buttonLabel}</button></div>`;
+    html += `<div style="margin-top: 8px;"><button class="ask-rag-btn" data-question-hash="${q.hash}" ${queryButtonDisabled} style="padding: 6px 10px; font-size: 12px; background:#3367d6; color:#fff; border:none; border-radius:4px; cursor:pointer;">${queryButtonLabel}</button></div>`;
     html += `</div>`;
 
     html += `
@@ -1148,21 +1189,66 @@ questionsContainer.addEventListener('click', (event) => {
     return;
   }
 
+  const toggleBtn = event.target.closest('.toggle-answer-btn');
+  if (toggleBtn) {
+    const questionHashToToggle = toggleBtn.getAttribute('data-question-hash');
+    const questionItemToToggle = questionsMap[questionHashToToggle];
+    if (questionItemToToggle) {
+      questionItemToToggle.answerExpanded = questionItemToToggle.answerExpanded === false;
+      displayQuestions();
+    }
+    return;
+  }
+
   const button = event.target.closest('.ask-rag-btn');
   if (!button) return;
 
   const questionHash = button.getAttribute('data-question-hash');
+  const questionInput = questionsContainer.querySelector(`.question-edit-input[data-question-hash="${questionHash}"]`);
+  const editedText = (questionInput ? questionInput.value : '').trim();
   const questionItem = questionsMap[questionHash];
   if (!questionItem || !questionItem.text) return;
 
-  questionItem.ragTriggered = true;
-  questionItem.noAnswerFound = false;
-  questionItem.error = null;
+  const normalizedQuestionText = (editedText || questionItem.text || '').trim();
+  if (!normalizedQuestionText) return;
+  const normalizedQuestionWithMark = normalizedQuestionText.endsWith('?') ? normalizedQuestionText : `${normalizedQuestionText}?`;
+  const newQuestionHash = hashQuestionLocal(normalizedQuestionWithMark);
+
+  let activeQuestion = questionItem;
+  if (newQuestionHash !== questionHash) {
+    delete questionsMap[questionHash];
+    if (questionsMap[newQuestionHash]) {
+      questionsMap[newQuestionHash] = {
+        ...questionsMap[newQuestionHash],
+        ...activeQuestion,
+        text: normalizedQuestionWithMark,
+        hash: newQuestionHash
+      };
+    } else {
+      questionsMap[newQuestionHash] = {
+        ...activeQuestion,
+        text: normalizedQuestionWithMark,
+        hash: newQuestionHash
+      };
+    }
+    activeQuestion = questionsMap[newQuestionHash];
+  } else {
+    activeQuestion.text = normalizedQuestionWithMark;
+  }
+
+  // Re-query should reset the card to pending (red) until a valid answer arrives.
+  activeQuestion.ragTriggered = true;
+  activeQuestion.noAnswerFound = false;
+  activeQuestion.error = null;
+  activeQuestion.answer = '';
+  activeQuestion.sources = [];
+  activeQuestion.answerReceived = false;
+  activeQuestion.answerExpanded = true;
   displayQuestions();
 
   chrome.runtime.sendMessage({
     type: 'QUERY_RAG_QUESTION',
-    question: questionItem.text
+    question: normalizedQuestionWithMark
   });
 });
 
