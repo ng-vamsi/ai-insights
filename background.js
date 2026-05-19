@@ -1944,7 +1944,6 @@ async function queryRAGAPI(question) {
     console.log('ℹ️ Question already processed, sending cached answer');
     const cachedAnswer = ragAnswers[questionHash];
     if (cachedAnswer) {
-      // Still send the cached answer back to popup for retry button resets
       chrome.runtime.sendMessage({
         type: 'RAG_ANSWER_READY',
         data: {
@@ -1962,7 +1961,7 @@ async function queryRAGAPI(question) {
   processedQuestions.add(questionHash);
 
   try {
-    console.log('📚 Querying RAG API for question:', question);
+    console.log('🤖 Querying OpenAI API for question:', question);
 
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), RAG_QUERY_TIMEOUT_MS);
@@ -1975,9 +1974,7 @@ async function queryRAGAPI(question) {
       body: JSON.stringify({
         query: question,
         top_k: 3,
-        // use_hyde: true,
-        // use_rerank: true
-         use_hyde: false,
+        use_hyde: false,
         use_rerank: false
       }),
       signal: controller.signal
@@ -2050,7 +2047,6 @@ async function queryRAGAPI(question) {
 
       return noAnswerResponse;
     }
-
     console.log('✅ RAG API returned answer');
     
     // Cache the answer

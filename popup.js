@@ -128,51 +128,80 @@ function upsertQuestion(questionText, incoming = {}) {
   const newHash = incomingHash || hashQuestionLocal(textWithMark);
 
   if (questionsMap[newHash]) {
-    questionsMap[newHash] = {
-      ...questionsMap[newHash],
-      ...incoming,
-      text: questionsMap[newHash].text || textWithMark,
+    const existing = questionsMap[newHash];
+    // Preserve answer-related fields if they're already set and incoming doesn't have them
+    const mergedData = {
+      ...existing,
+      text: existing.text || textWithMark,
       hash: newHash,
+      timestamp: existing.timestamp,
       answerExpanded: incoming.answerExpanded !== undefined
         ? incoming.answerExpanded
-        : (questionsMap[newHash].answerExpanded !== undefined ? questionsMap[newHash].answerExpanded : true)
+        : (existing.answerExpanded !== undefined ? existing.answerExpanded : true)
     };
+    
+    // Only override answer-related fields if incoming has meaningful values
+    if (incoming.answer && incoming.answer.trim().length > 0) {
+      mergedData.answer = incoming.answer;
+    }
+    if (incoming.sources && incoming.sources.length > 0) {
+      mergedData.sources = incoming.sources;
+    }
+    if (incoming.answerReceived !== undefined) {
+      mergedData.answerReceived = incoming.answerReceived;
+    }
+    if (incoming.noAnswerFound !== undefined) {
+      mergedData.noAnswerFound = incoming.noAnswerFound;
+    }
+    if (incoming.error !== undefined) {
+      mergedData.error = incoming.error;
+    }
+    if (incoming.ragTriggered !== undefined) {
+      mergedData.ragTriggered = incoming.ragTriggered;
+    }
+    
+    questionsMap[newHash] = mergedData;
     return newHash;
   }
 
   const existingEntry = Object.values(questionsMap).find((q) => areQuestionsMergeable(q.text, textWithMark));
   if (existingEntry) {
+    // Update existing question in place without changing hash or creating a new one
     const existingNorm = normalizeQuestionText(existingEntry.text);
-    const keepNewText = normalizedKey.length > existingNorm.length;
-
-    if (keepNewText) {
-      const preserved = { ...existingEntry };
-      delete questionsMap[existingEntry.hash];
-      questionsMap[newHash] = {
-        ...preserved,
-        ...incoming,
-        text: textWithMark,
-        hash: newHash,
-        timestamp: preserved.timestamp || incoming.timestamp || Date.now(),
-        answer: incoming.answer || '',
-        sources: incoming.sources || [],
-        noAnswerFound: !!incoming.noAnswerFound,
-        error: incoming.error || null,
-        answerReceived: !!incoming.answerReceived,
-        ragTriggered: false,
-        answerExpanded: incoming.answerExpanded !== undefined
-          ? incoming.answerExpanded
-          : (preserved.answerExpanded !== undefined ? preserved.answerExpanded : true)
-      };
-      return newHash;
-    }
-
-    questionsMap[existingEntry.hash] = {
+    const shouldUpdateText = normalizedKey.length > existingNorm.length;
+    
+    // Preserve answer-related fields if they're already set and incoming doesn't have them
+    const mergedData = {
       ...existingEntry,
-      ...incoming,
-      text: existingEntry.text,
-      hash: existingEntry.hash
+      text: shouldUpdateText ? textWithMark : existingEntry.text,
+      hash: existingEntry.hash,
+      timestamp: existingEntry.timestamp,
+      answerExpanded: incoming.answerExpanded !== undefined
+        ? incoming.answerExpanded
+        : (existingEntry.answerExpanded !== undefined ? existingEntry.answerExpanded : true)
     };
+    
+    // Only override answer-related fields if incoming has meaningful values
+    if (incoming.answer && incoming.answer.trim().length > 0) {
+      mergedData.answer = incoming.answer;
+    }
+    if (incoming.sources && incoming.sources.length > 0) {
+      mergedData.sources = incoming.sources;
+    }
+    if (incoming.answerReceived !== undefined) {
+      mergedData.answerReceived = incoming.answerReceived;
+    }
+    if (incoming.noAnswerFound !== undefined) {
+      mergedData.noAnswerFound = incoming.noAnswerFound;
+    }
+    if (incoming.error !== undefined) {
+      mergedData.error = incoming.error;
+    }
+    if (incoming.ragTriggered !== undefined) {
+      mergedData.ragTriggered = incoming.ragTriggered;
+    }
+    
+    questionsMap[existingEntry.hash] = mergedData;
     return existingEntry.hash;
   }
 
@@ -335,12 +364,7 @@ chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey', 'ragBaseUrl'], (resu
     saveOpenaiKeyBtn.textContent = 'Change';
   }
 
-  if (result.ragBaseUrl) {
-    ragUrlInput.value = result.ragBaseUrl;
-    ragUrlInput.disabled = true;
-    saveRagUrlBtn.textContent = 'Change';
-    console.log('✅ RAG API URL loaded from storage:', result.ragBaseUrl);
-  }
+
   
   // Mark that API keys have been loaded
   apiKeysLoaded = true;
@@ -1118,7 +1142,7 @@ function displayQuestions() {
     const answerExpanded = q.answerExpanded !== false;
     const queryButtonLabel = q.ragTriggered
       ? 'Querying...'
-      : ((q.answerReceived || q.noAnswerFound || q.error || hasAnswer) ? 'Query RAG Again' : 'Get RAG Answer');
+      : ((q.answerReceived || q.noAnswerFound || q.error || hasAnswer) ? 'Ask AI Again' : 'Ask AI');
     const queryButtonDisabled = q.ragTriggered ? 'disabled' : '';
     
     html += `
@@ -1142,7 +1166,7 @@ function displayQuestions() {
 
     // RAG response block
     html += `<div style="background: #eef3ff; padding: 8px; border-radius: 4px; margin-bottom: 8px; border-left: 3px solid #3367d6;">`;
-    html += `<div style="font-size: 11px; font-weight: 700; color: #1a3f9d; margin-bottom: 4px;">RAG (/rag/query)</div>`;
+    // html += `<div style="font-size: 11px; font-weight: 700; color: #1a3f9d; margin-bottom: 4px;">RAG (/rag/query)</div>`;
     if (q.answer && q.answer.trim().length > 0) {
       const toggleLabel = answerExpanded ? 'Minimize Answer' : 'Expand Answer';
       html += `<div style="margin-bottom: 6px;"><button class="toggle-answer-btn" data-question-hash="${q.hash}" style="padding: 4px 8px; font-size: 11px; background:#1b5e20; color:#fff; border:none; border-radius:3px; cursor:pointer;">${toggleLabel}</button></div>`;
@@ -1211,29 +1235,10 @@ questionsContainer.addEventListener('click', (event) => {
   const normalizedQuestionText = (editedText || questionItem.text || '').trim();
   if (!normalizedQuestionText) return;
   const normalizedQuestionWithMark = normalizedQuestionText.endsWith('?') ? normalizedQuestionText : `${normalizedQuestionText}?`;
-  const newQuestionHash = hashQuestionLocal(normalizedQuestionWithMark);
 
-  let activeQuestion = questionItem;
-  if (newQuestionHash !== questionHash) {
-    delete questionsMap[questionHash];
-    if (questionsMap[newQuestionHash]) {
-      questionsMap[newQuestionHash] = {
-        ...questionsMap[newQuestionHash],
-        ...activeQuestion,
-        text: normalizedQuestionWithMark,
-        hash: newQuestionHash
-      };
-    } else {
-      questionsMap[newQuestionHash] = {
-        ...activeQuestion,
-        text: normalizedQuestionWithMark,
-        hash: newQuestionHash
-      };
-    }
-    activeQuestion = questionsMap[newQuestionHash];
-  } else {
-    activeQuestion.text = normalizedQuestionWithMark;
-  }
+  // Update the question in place without creating a new one
+  const activeQuestion = questionItem;
+  activeQuestion.text = normalizedQuestionWithMark;
 
   // Re-query should reset the card to pending (red) until a valid answer arrives.
   activeQuestion.ragTriggered = true;
