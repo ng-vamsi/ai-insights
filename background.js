@@ -18,12 +18,22 @@ let sentimentData = [];
 let detectedTopics = [];
 let detectedIntents = [];
 
-// LLM Configuration for real-time insights
+// LLM Configuration for real-time insights - using OpenAI directly
 let openaiApiKey = (ENV.OPENROUTER_API_KEY || '').trim();
-const LLM_CHAT_COMPLETIONS_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const LLM_MODEL = 'openai/gpt-4o-mini';
 let lastInsightGenerationTime = 0;
 const INSIGHT_GENERATION_INTERVAL = 10000; // Generate insights every 10 seconds (batch for cost efficiency)
+
+// Load API keys from storage on startup
+chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey'], (result) => {
+  if (result.openaiApiKey) {
+    openaiApiKey = result.openaiApiKey;
+    console.log('🔑 OpenAI API key loaded from storage');
+  }
+  if (result.deepgramApiKey) {
+    deepgramApiKey = result.deepgramApiKey;
+    console.log('🔑 Deepgram API key loaded from storage');
+  }
+});
 
 // RAG Configuration for document search
 let ragBaseUrl = (ENV.RAG_BASE_URL || 'http://localhost:8000').trim();
@@ -350,6 +360,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
 
     return false;
+  }
+
+  // Handle API key configuration
+  if (message.type === 'SET_OPENAI_KEY') {
+    openaiApiKey = message.apiKey;
+    chrome.storage.local.set({ openaiApiKey: message.apiKey }, () => {
+      console.log('🔑 OpenAI API key saved to storage');
+    });
+    sendResponse({ success: true });
+    return true;
+  }
+
+  if (message.type === 'SET_DEEPGRAM_KEY') {
+    deepgramApiKey = message.apiKey;
+    chrome.storage.local.set({ deepgramApiKey: message.apiKey }, () => {
+      console.log('🔑 Deepgram API key saved to storage');
+    });
+    sendResponse({ success: true });
+    return true;
   }
 
   // Unknown message type
@@ -1270,15 +1299,15 @@ async function handleGenerateAISummary(transcript) {
   }
   
   try {
-    // Call OpenRouter API
-    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
+    // Call OpenAI API
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${configuredApiKey}`
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
+        model: 'gpt-4o-mini',
         messages: [{
           role: 'system',
           content: `You are an expert sales coach. A sales rep just finished a call and needs your immediate, specific guidance. Analyze the transcript and respond using these exact markdown sections:
@@ -1433,7 +1462,7 @@ async function generateLiveInsightsWithLLM() {
 
 async function callOpenAIForLiveInsights(transcript) {
   if (!openaiApiKey) {
-    throw new Error('OpenRouter API key not configured');
+    throw new Error('OpenAI API key not configured');
   }
   
   const systemPrompt = `You are a real-time sales intelligence analyst for high-stakes sales conversations. Your job is NOT to summarize or repeat the transcript. Instead:
@@ -1468,14 +1497,14 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
 }`;
 
   try {
-    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${openaiApiKey}`
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: `Analyze this sales conversation segment:\n\n${transcript}` }
@@ -1487,7 +1516,7 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
     
     if (!response.ok) {
       const error = await response.json();
-      throw new Error(`OpenRouter API error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
+      throw new Error(`OpenAI API error: ${response.status} - ${error.error?.message || 'Unknown error'}`);
     }
     
     const data = await response.json();
@@ -1517,7 +1546,7 @@ RESPOND WITH THIS JSON STRUCTURE - ONLY VALID JSON, NO MARKDOWN OR BACKTICKS:
       riskLevel: insights.riskLevel || 'medium'
     };
   } catch (err) {
-    console.error('❌ OpenRouter API call failed:', err);
+    console.error('❌ OpenAI API call failed:', err);
     throw err;
   }
 }
@@ -1528,14 +1557,14 @@ async function analyzeTextSentimentWithLLM(text) {
   }
   
   try {
-    const response = await fetch(LLM_CHAT_COMPLETIONS_URL, {
+    const response = await fetch('https://api.openai.com/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${openaiApiKey}`
       },
       body: JSON.stringify({
-        model: LLM_MODEL,
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: 'Respond with ONLY one word: "positive", "neutral", or "negative"' },
           { role: 'user', content: `Sentiment of: "${text}"` }
