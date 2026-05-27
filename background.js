@@ -17,6 +17,7 @@ let fullTranscript = [];
 let sentimentData = [];
 let detectedTopics = [];
 let detectedIntents = [];
+let latestLiveInsights = null; // Store the most recent insights to send to popup when it opens
 
 // LLM Configuration for real-time insights
 let openaiApiKey = (ENV.OPENROUTER_API_KEY || '').trim();
@@ -274,11 +275,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
   // Return current recording state so popup can restore UI after reopen
   if (message.type === 'GET_STATE') {
-    sendResponse({
+    const response = {
       isRecording,
       hasRecording: audioChunks.length > 0,
-      duration: recordingStartTime ? Math.floor((Date.now() - recordingStartTime) / 1000) : 0
+      duration: recordingStartTime ? Math.floor((Date.now() - recordingStartTime) / 1000) : 0,
+      liveInsights: latestLiveInsights // Include latest insights so popup can display them
+    };
+    console.log('📤 Sending GET_STATE response with insights:', {
+      isRecording: response.isRecording,
+      hasInsights: !!response.liveInsights,
+      insightsSource: response.liveInsights?.source
     });
+    sendResponse(response);
     return true;
   }
 
@@ -370,6 +378,8 @@ async function handleInitRecording(tabId) {
   pendingQuestionPrefix = '';
   processedQuestions = new Set();
   ragAnswers = {};
+  latestLiveInsights = null; // Clear previous insights
+  lastInsightGenerationTime = 0; // Reset insight timer
   isRecording = true;
   recordingStartTime = Date.now();
   recordingTabId = tabId;
@@ -533,10 +543,17 @@ function initDeepgramConnection() {
                   } else {
                     liveInsights.latencyMs = null;
                   }
+                  
+                  // Store latest insights so popup can retrieve them when opened
+                  latestLiveInsights = liveInsights;
+                  console.log('💾 Stored latest insights for popup retrieval');
+                  
                   chrome.runtime.sendMessage({
                     type: 'LIVE_INSIGHTS_UPDATE',
                     data: liveInsights
-                  }).catch(() => {});
+                  }).catch((err) => {
+                    console.log('⚠️ Failed to send insights to popup (popup may be closed):', err.message);
+                  });
                 }
 
                 // Also detect and query new questions from the transcript

@@ -319,6 +319,18 @@ chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
     playBtn.disabled = false;
     statusDiv.textContent = `Status: Recording ready (${response.duration}s) — download or play below`;
   }
+  
+  // Display latest insights if available
+  if (response.liveInsights) {
+    console.log('📊 Displaying insights from GET_STATE:', {
+      source: response.liveInsights.source,
+      hasTopics: !!response.liveInsights.topics,
+      allKeys: Object.keys(response.liveInsights)
+    });
+    displayLiveInsights(response.liveInsights);
+  } else {
+    console.log('ℹ️ No insights available in GET_STATE response');
+  }
 
   // Fetch detected questions
   chrome.runtime.sendMessage({ type: 'GET_DETECTED_QUESTIONS' }, (questionsResponse) => {
@@ -378,6 +390,11 @@ chrome.runtime.onMessage.addListener((message) => {
   }
   
   if (message.type === 'LIVE_INSIGHTS_UPDATE') {
+    console.log('📨 POPUP RECEIVED LIVE_INSIGHTS_UPDATE message:', {
+      hasData: !!message.data,
+      source: message.data?.source,
+      allKeys: message.data ? Object.keys(message.data) : []
+    });
     displayLiveInsights(message.data);
   }
   
