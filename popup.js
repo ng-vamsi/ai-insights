@@ -37,11 +37,46 @@ tabDeep.addEventListener('click',     () => switchTab('deep'));
 
 let isRecording = false;
 let deepgramApiKey = (ENV.DEEPGRAM_API_KEY || '').trim();
+let openaiApiKey = (ENV.OPENROUTER_API_KEY || '').trim();
 let currentTranscriptText = '';
 let ragAnswersMap = {}; // Store RAG answers keyed by questionHash
 let questionsMap = {}; // Store all detected questions with their data
 let pendingLocalQuestionPrefix = ''; // Holds split question starters across transcript chunks
 let dismissedQuestionKeys = new Set(); // User-dismissed questions for current recording
+
+// Load API keys from storage on startup
+console.log('🚀 Sales Audio Insider - Loading...');
+chrome.storage.local.get(['deepgramApiKey', 'openaiApiKey'], (result) => {
+  if (result.deepgramApiKey) {
+    deepgramApiKey = result.deepgramApiKey;
+    console.log('🔑 Deepgram API key loaded from storage (' + deepgramApiKey.length + ' chars)');
+  } else {
+    console.warn('⚠️ Deepgram API key not configured');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('📝 SETUP REQUIRED: Set your Deepgram API key');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Run this command:');
+    console.log('%cchrome.runtime.sendMessage({ type: "SET_DEEPGRAM_KEY", apiKey: "your-key-here" });', 'background: #4285f4; color: white; padding: 4px; border-radius: 3px;');
+    console.log('Get your key at: https://console.deepgram.com/');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    statusDiv.textContent = '⚠️ Deepgram API key not set. Check console for setup instructions.';
+    statusDiv.style.color = '#ea4335';
+  }
+  
+  if (result.openaiApiKey) {
+    openaiApiKey = result.openaiApiKey;
+    console.log('🔑 OpenAI API key loaded from storage (' + openaiApiKey.length + ' chars)');
+  } else {
+    console.warn('⚠️ OpenAI API key not configured (AI insights will be disabled)');
+    console.log('📝 To enable AI insights, set OpenAI API key:');
+    console.log('%cchrome.runtime.sendMessage({ type: "SET_OPENAI_KEY", apiKey: "sk-proj-your-key-here" });', 'background: #34a853; color: white; padding: 4px; border-radius: 3px;');
+    console.log('Get your key at: https://platform.openai.com/api-keys');
+  }
+  
+  if (result.deepgramApiKey && result.openaiApiKey) {
+    console.log('✅ All API keys configured - Ready to record!');
+  }
+});
 
 function hashQuestionLocal(question) {
   let hash = 0;
@@ -472,8 +507,11 @@ startBtn.addEventListener('click', async () => {
   
   // Check if API key is actually configured
   if (!deepgramApiKey || deepgramApiKey.length < 20) {
-    statusDiv.innerHTML = "Status: Missing Deepgram key in env.js";
+    statusDiv.innerHTML = "⚠️ Deepgram API key not configured. Check console.";
+    statusDiv.style.color = '#ea4335';
     console.error('❌ Invalid API key. Length:', deepgramApiKey?.length || 0);
+    console.log('📝 Set your Deepgram API key with:');
+    console.log('chrome.runtime.sendMessage({ type: "SET_DEEPGRAM_KEY", apiKey: "your-deepgram-key-here" })');
     startBtn.disabled = false;
     return;
   }
