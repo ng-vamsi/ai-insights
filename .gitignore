@@ -1,3 +1,5 @@
 .env
 env.js
-*.md
+# Documentation files you want to keep
+# Remove *.md if you want to commit markdown files
+# *.md
