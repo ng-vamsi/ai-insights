@@ -1,8 +1,36 @@
 # Setup Instructions
 
-## API Key Configuration
+## Quick Start
 
-1. **Copy the example configuration file:**
+### API Key Configuration (Choose One Method)
+
+#### Method 1: Console Commands (Recommended ⭐)
+1. Click the extension icon in Chrome
+2. Open browser console (`F12` or `Ctrl+Shift+I`)
+3. Run these commands:
+
+```javascript
+// Set Deepgram API key
+chrome.runtime.sendMessage({ 
+  type: "SET_DEEPGRAM_KEY", 
+  apiKey: "your-deepgram-api-key-here" 
+});
+
+// Set OpenAI API key
+chrome.runtime.sendMessage({ 
+  type: "SET_OPENAI_KEY", 
+  apiKey: "sk-proj-your-openai-key-here" 
+});
+```
+
+**Get API Keys:**
+- Deepgram: https://console.deepgram.com/
+- OpenAI: https://platform.openai.com/api-keys
+
+For detailed instructions, see [API_KEY_SETUP.md](API_KEY_SETUP.md)
+
+#### Method 2: Using env.js File
+1. Copy the example configuration file:
    ```bash
    cp env.example.js env.js
    ```
