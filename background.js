@@ -35,6 +35,11 @@ chrome.storage.local.get(['openaiApiKey', 'deepgramApiKey'], (result) => {
   }
 });
 
+// Open side panel when extension icon is clicked
+chrome.action.onClicked.addListener((tab) => {
+  chrome.sidePanel.open({ tabId: tab.id });
+});
+
 // RAG Configuration for document search
 let ragBaseUrl = (ENV.RAG_BASE_URL || 'http://localhost:8000').trim();
 const RAG_QUERY_TIMEOUT_MS = 300000; // Wait up to 5 minutes for local RAG backend responses

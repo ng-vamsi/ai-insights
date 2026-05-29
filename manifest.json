@@ -9,10 +9,14 @@
     "tabs",
     "activeTab",
     "storage",
-    "downloads"
+    "downloads",
+    "sidePanel"
   ],
   "action": {
-    "default_popup": "popup.html"
+    "default_title": "Open Sales AI Listener"
+  },
+  "side_panel": {
+    "default_path": "sidepanel.html"
   },
   "background": {
     "service_worker": "background.js",
