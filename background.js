@@ -322,7 +322,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
 
     const normalizedQuestion = rawQuestion.endsWith('?') ? rawQuestion : `${rawQuestion}?`;
-    const questionHash = hashQuestion(normalizedQuestion);
+    const questionHash = message.newHash || hashQuestion(normalizedQuestion);
+    const originalHash = message.originalHash;
+    
+    // If editing an existing question (different hash), remove the old one
+    if (originalHash && originalHash !== questionHash) {
+      const oldIndex = detectedQuestions.findIndex(q => q.hash === originalHash);
+      if (oldIndex !== -1) {
+        detectedQuestions.splice(oldIndex, 1);
+        processedQuestions.delete(originalHash);
+        delete ragAnswers[originalHash];
+        console.log(`🔄 Removed old question (${originalHash}) and replaced with edited version (${questionHash})`);
+      }
+    }
     
     // Clear cache for this question to allow fresh retry
     processedQuestions.delete(questionHash);

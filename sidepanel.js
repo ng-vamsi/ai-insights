@@ -440,6 +440,17 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === 'QUESTIONS_DETECTED') {
     console.log('📋 Received detected questions:', message.data);
     if (message.data && message.data.allQuestions) {
+      // Sync questionsMap with allQuestions from background
+      const receivedHashes = new Set(message.data.allQuestions.map(q => q.hash));
+      
+      // Remove questions that are no longer in the backend list
+      Object.keys(questionsMap).forEach(hash => {
+        if (!receivedHashes.has(hash) && !dismissedQuestionKeys.has(normalizeQuestionText(questionsMap[hash].text))) {
+          console.log('🗑️ Removing question no longer in backend:', questionsMap[hash].text);
+          delete questionsMap[hash];
+        }
+      });
+      
       // Update questionsMap with all detected questions
       message.data.allQuestions.forEach(q => {
         upsertQuestion(q.text, {
@@ -1094,33 +1105,55 @@ questionsContainer.addEventListener('click', (event) => {
   const button = event.target.closest('.ask-rag-btn');
   if (!button) return;
 
-  const questionHash = button.getAttribute('data-question-hash');
-  const questionInput = questionsContainer.querySelector(`.question-edit-input[data-question-hash="${questionHash}"]`);
+  const originalHash = button.getAttribute('data-question-hash');
+  const questionInput = questionsContainer.querySelector(`.question-edit-input[data-question-hash="${originalHash}"]`);
   const editedText = (questionInput ? questionInput.value : '').trim();
-  const questionItem = questionsMap[questionHash];
+  const questionItem = questionsMap[originalHash];
   if (!questionItem || !questionItem.text) return;
 
   const normalizedQuestionText = (editedText || questionItem.text || '').trim();
   if (!normalizedQuestionText) return;
   const normalizedQuestionWithMark = normalizedQuestionText.endsWith('?') ? normalizedQuestionText : `${normalizedQuestionText}?`;
 
-  // Update the question in place without creating a new one
-  const activeQuestion = questionItem;
-  activeQuestion.text = normalizedQuestionWithMark;
-
-  // Re-query should reset the card to pending (red) until a valid answer arrives.
-  activeQuestion.ragTriggered = true;
-  activeQuestion.noAnswerFound = false;
-  activeQuestion.error = null;
-  activeQuestion.answer = '';
-  activeQuestion.sources = [];
-  activeQuestion.answerReceived = false;
-  activeQuestion.answerExpanded = true;
+  // Calculate new hash for the edited question
+  const newHash = hashQuestionLocal(normalizedQuestionWithMark);
+  
+  // If question text changed (different hash), replace old with new
+  if (newHash !== originalHash) {
+    // Remove old question
+    delete questionsMap[originalHash];
+    
+    // Create new question with edited text
+    questionsMap[newHash] = {
+      text: normalizedQuestionWithMark,
+      hash: newHash,
+      timestamp: Date.now(),
+      answer: '',
+      sources: [],
+      noAnswerFound: false,
+      error: null,
+      answerReceived: false,
+      ragTriggered: true,
+      answerExpanded: true
+    };
+  } else {
+    // Same question, just re-query
+    questionItem.ragTriggered = true;
+    questionItem.noAnswerFound = false;
+    questionItem.error = null;
+    questionItem.answer = '';
+    questionItem.sources = [];
+    questionItem.answerReceived = false;
+    questionItem.answerExpanded = true;
+  }
+  
   displayQuestions();
 
   chrome.runtime.sendMessage({
     type: 'QUERY_RAG_QUESTION',
-    question: normalizedQuestionWithMark
+    question: normalizedQuestionWithMark,
+    originalHash: originalHash,
+    newHash: newHash
   });
 });
 
