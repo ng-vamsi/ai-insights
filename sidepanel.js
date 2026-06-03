@@ -188,6 +188,9 @@ function upsertQuestion(questionText, incoming = {}) {
     if (incoming.ragTriggered !== undefined) {
       mergedData.ragTriggered = incoming.ragTriggered;
     }
+    if (incoming.autoDetected !== undefined) {
+      mergedData.autoDetected = incoming.autoDetected;
+    }
     
     questionsMap[newHash] = mergedData;
     return newHash;
@@ -229,6 +232,9 @@ function upsertQuestion(questionText, incoming = {}) {
     if (incoming.ragTriggered !== undefined) {
       mergedData.ragTriggered = incoming.ragTriggered;
     }
+    if (incoming.autoDetected !== undefined) {
+      mergedData.autoDetected = incoming.autoDetected;
+    }
     
     questionsMap[existingEntry.hash] = mergedData;
     return existingEntry.hash;
@@ -244,7 +250,8 @@ function upsertQuestion(questionText, incoming = {}) {
     error: incoming.error || null,
     answerReceived: !!incoming.answerReceived,
     ragTriggered: !!incoming.ragTriggered,
-    answerExpanded: incoming.answerExpanded !== undefined ? incoming.answerExpanded : true
+    answerExpanded: incoming.answerExpanded !== undefined ? incoming.answerExpanded : true,
+    autoDetected: !!incoming.autoDetected
   };
   return newHash;
 }
@@ -366,7 +373,9 @@ chrome.runtime.sendMessage({ type: 'GET_STATE' }, (response) => {
           sources: q.sources,
           noAnswerFound: !!q.noAnswerFound,
           error: q.error || null,
-          answerReceived: !!q.answerReceived
+          answerReceived: !!q.answerReceived,
+          autoDetected: !!q.autoDetected,
+          ragTriggered: !!q.ragTriggered
         });
       });
       displayQuestions();
@@ -460,7 +469,9 @@ chrome.runtime.onMessage.addListener((message) => {
           sources: q.sources,
           noAnswerFound: !!q.noAnswerFound,
           error: q.error || null,
-          answerReceived: !!q.answerReceived
+          answerReceived: !!q.answerReceived,
+          autoDetected: !!q.autoDetected,
+          ragTriggered: !!q.ragTriggered
         });
       });
       displayQuestions();
@@ -1029,6 +1040,7 @@ function displayQuestions() {
         <button class="remove-question-btn" data-question-hash="${q.hash}" style="position:absolute; top:8px; right:8px; padding:4px 8px; font-size:11px; border:none; border-radius:3px; background:#ea4335; color:#fff; cursor:pointer; font-weight:600;">Delete</button>
         <div style="font-size: 13px; font-weight: 500; color: ${questionColor}; margin-bottom: 8px;">
           Q${questionIndex}: ${hasBeenQueried ? q.text : ''}
+          ${q.autoDetected ? '<span style="font-size:10px; font-weight:600; color:#1a73e8; background:#e8f0fe; padding:2px 6px; border-radius:3px; margin-left:6px;">🤖 Auto Detected & Triggered</span>' : ''}
         </div>
     `;
     
@@ -1061,12 +1073,26 @@ function displayQuestions() {
     } else if (q.noAnswerFound || q.error) {
       const ragReason = q.error || 'No related answer found in knowledge base';
       html += `<div style="color:#8d6e63;"><strong>No answer found:</strong> ${ragReason}</div>`;
+    } else if (q.ragTriggered && !q.answerReceived) {
+      // Show "Querying..." status with cancel button
+      html += `<div style="color:#1a73e8; font-weight:500; margin-bottom:6px;">⏳ Querying knowledge base...</div>`;
     } else if (!q.ragTriggered) {
       // Only show this message if RAG hasn't been triggered yet
       // After clicking the button, ragTriggered will be true and this won't show
     }
 
-    html += `<div style="margin-top: 8px;"><button class="ask-rag-btn" data-question-hash="${q.hash}" ${queryButtonDisabled} style="padding: 6px 10px; font-size: 12px; background:#3367d6; color:#fff; border:none; border-radius:4px; cursor:pointer;">${queryButtonLabel}</button></div>`;
+    // Show action buttons
+    html += `<div style="margin-top: 8px; display:flex; gap:8px;">`;
+    
+    // Show Cancel button if actively querying
+    if (q.ragTriggered && !q.answerReceived && !q.noAnswerFound && !q.error) {
+      html += `<button class="cancel-rag-btn" data-question-hash="${q.hash}" style="padding: 6px 10px; font-size: 12px; background:#ea4335; color:#fff; border:none; border-radius:4px; cursor:pointer; font-weight:500;"> Cancel </button>`;
+    }
+    
+    // Show Ask AI / Ask AI Again button
+    html += `<button class="ask-rag-btn" data-question-hash="${q.hash}" ${queryButtonDisabled} style="padding: 6px 10px; font-size: 12px; background:#3367d6; color:#fff; border:none; border-radius:4px; cursor:pointer;">${queryButtonLabel}</button>`;
+    
+    html += `</div>`;
     html += `</div>`;
 
     html += `
@@ -1097,6 +1123,30 @@ questionsContainer.addEventListener('click', (event) => {
     const questionItemToToggle = questionsMap[questionHashToToggle];
     if (questionItemToToggle) {
       questionItemToToggle.answerExpanded = questionItemToToggle.answerExpanded === false;
+      displayQuestions();
+    }
+    return;
+  }
+
+  // Handle cancel RAG query button
+  const cancelBtn = event.target.closest('.cancel-rag-btn');
+  if (cancelBtn) {
+    const questionHashToCancel = cancelBtn.getAttribute('data-question-hash');
+    const questionItemToCancel = questionsMap[questionHashToCancel];
+    if (questionItemToCancel) {
+      console.log('🛑 User canceled RAG query for:', questionItemToCancel.text);
+      
+      // Send cancel message to background
+      chrome.runtime.sendMessage({
+        type: 'CANCEL_RAG_QUERY',
+        questionHash: questionHashToCancel
+      });
+      
+      // Update UI immediately to show cancellation
+      questionItemToCancel.ragTriggered = false;
+      questionItemToCancel.answerReceived = false;
+      questionItemToCancel.noAnswerFound = false;
+      questionItemToCancel.error = null;
       displayQuestions();
     }
     return;

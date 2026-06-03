@@ -51,8 +51,15 @@ let pendingQuestionPrefix = ''; // Holds split question starters across transcri
 // Two-stage question detection: pending → confirmed
 let pendingCandidates = {}; // { candidateHash: { text, firstSeenAt, lastUpdatedAt, confidence, extendCount } }
 const STABILITY_WINDOW_MS = 1500; // Hold candidate for 1.5s before confirming
-const CONFIDENCE_THRESHOLD = 0.6; // Score 0-1; >= threshold = auto-confirm
+const CONFIDENCE_THRESHOLD = 0.5; // Score 0-1; >= threshold = auto-confirm (lowered from 0.6 to catch more questions)
 const AI_VALIDATION_THRESHOLD = 0.4; // 0.4-0.6 = ambiguous, send to AI
+
+// Auto-send configuration: automatically query RAG immediately when question is detected
+let autoSendTimers = {}; // { questionHash: timeoutId } - kept for manual query cancellation
+const AUTO_SEND_DELAY_MS = 0; // Immediate auto-send (no delay)
+
+// Request cancellation: track active RAG API requests
+let activeRAGRequests = {}; // { questionHash: { controller: AbortController, timeoutId: number } }
 
 function normalizeSourceList(sources) {
   if (!Array.isArray(sources)) {
@@ -87,19 +94,20 @@ function scoreQuestionConfidence(candidate) {
   // Ends with question mark: strong signal
   if (candidate.endsWith('?')) score += 0.25;
 
-  // Starts with interrogative or intent pattern
+  // Starts with interrogative or intent pattern - BOOSTED from 0.2 to 0.35 for speech-to-text without punctuation
   const interrogatives = /^(who|what|when|where|why|how|can|could|would|should|do|does|did|is|are|am|will|may|might|have|has|had|which)\b/i;
   const intents = /^(i want to know|i wanted to know|i want to understand|can you tell me|tell me|i'm curious|i am curious)/i;
-  if (interrogatives.test(normalized) || intents.test(normalized)) score += 0.2;
+  if (interrogatives.test(normalized) || intents.test(normalized)) score += 0.35; // Increased from 0.2
 
   // Contains verb-like token
-  const verbLike = /\b(is|are|am|was|were|has|have|had|do|does|did|will|would|could|can|should|may|might|use|work|think|know|understand|tell|ask|need|want|make|get|go|come|see|take|give|find|show|say)\b/i;
+  const verbLike = /\b(is|are|am|was|were|has|have|had|do|does|did|will|would|could|can|should|may|might|use|work|think|know|understand|tell|ask|need|want|make|get|go|come|see|take|give|find|show|say|access)\b/i;
   if (verbLike.test(normalized)) score += 0.25;
 
-  // Penalty: ends with stop word
+  // Penalty: ends with stop word (but reduced penalty for common question endings)
   const lastWord = (words[words.length - 1] || '').toLowerCase();
-  const stopWords = new Set(['of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon', 'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether']);
-  if (stopWords.has(lastWord)) score -= 0.3;
+  const stopWords = new Set(['of', 'in', 'to', 'for', 'with', 'on', 'at', 'by', 'from', 'about', 'into', 'onto', 'upon']);
+  // Removed 'if', 'how', 'what', 'when', 'where', 'who', 'which', 'whether' from stop words as they're valid question endings
+  if (stopWords.has(lastWord)) score -= 0.2; // Reduced penalty from 0.3 to 0.2
 
   // Penalty: known incomplete stems
   const lowered = normalized.toLowerCase();
@@ -178,12 +186,20 @@ async function confirmPendingCandidates() {
   const now = Date.now();
   const newlyConfirmed = [];
   
+  // Log pending candidates count for debugging
+  const pendingCount = Object.keys(pendingCandidates).length;
+  if (pendingCount > 0) {
+    console.log(`🔄 Checking ${pendingCount} pending candidate(s)...`);
+  }
+  
   for (const [hash, candidate] of Object.entries(pendingCandidates)) {
     const age = now - candidate.firstSeenAt;
     const stability = now - candidate.lastUpdatedAt;
     
     // Confirm if: stable for window OR high confidence
     const shouldConfirm = stability >= STABILITY_WINDOW_MS || candidate.confidence >= CONFIDENCE_THRESHOLD;
+    
+    console.log(`   Candidate: "${candidate.text.substring(0, 50)}..." | Confidence: ${candidate.confidence.toFixed(2)} | Stability: ${stability}ms | Will confirm: ${shouldConfirm}`);
     
     if (shouldConfirm) {
       // If mid-band confidence, optionally validate with AI
@@ -206,7 +222,8 @@ async function confirmPendingCandidates() {
         sources: [],
         noAnswerFound: false,
         error: null,
-        answerReceived: false
+        answerReceived: false,
+        autoDetected: true // Mark as auto-detected for UI display
       };
       
       // Check if this question already exists
@@ -214,7 +231,16 @@ async function confirmPendingCandidates() {
       if (!exists) {
         detectedQuestions.push(newQuestion);
         newlyConfirmed.push(newQuestion);
-        console.log('✅ Confirmed question:', newQuestion.text);
+        console.log('✅ CONFIRMED QUESTION:', newQuestion.text, '| Hash:', newQuestion.hash);
+        console.log('   Auto-sending to RAG API immediately...');
+        
+        // Mark as triggered before sending
+        newQuestion.ragTriggered = true;
+        
+        // Auto-send immediately (no delay)
+        queryRAGAPI(newQuestion.text).catch(err => {
+          console.error('❌ Auto-send query failed:', err.message);
+        });
       }
       
       delete pendingCandidates[hash];
@@ -235,15 +261,30 @@ async function confirmPendingCandidates() {
           sources: q.sources || [],
           noAnswerFound: !!q.noAnswerFound,
           error: q.error || null,
-          answerReceived: !!q.answerReceived
+          answerReceived: !!q.answerReceived,
+          autoDetected: !!q.autoDetected,
+          ragTriggered: !!q.ragTriggered
         }))
       }
     }).catch(() => {});
   }
 }
 
+// Schedule auto-send for a question after 2 seconds
+function scheduleAutoSend(questionHash, questionText) {
+  // This function is now only used for manual "Ask AI Again" scenarios
+  // Auto-detected questions are sent immediately without delay
+  console.log('⏱️ Manual query scheduled for:', questionText);
+  
+  // Call immediately (no delay needed)
+  queryRAGAPI(questionText).catch(err => {
+    console.error('❌ Manual query failed:', err.message);
+  });
+}
+
 // Periodically confirm pending candidates (every 500ms)
-setInterval(confirmPendingCandidates, 500);
+const confirmInterval = setInterval(confirmPendingCandidates, 500);
+console.log('⏰ Started confirmPendingCandidates interval (every 500ms)');
 
 console.log('🔧 API config loaded from env.js');
 
@@ -315,6 +356,72 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 
   // Direct question trigger from popup fallback detection
+  if (message.type === 'CANCEL_RAG_QUERY') {
+    const questionHash = message.questionHash;
+    if (!questionHash) {
+      console.error('❌ CANCEL_RAG_QUERY: No question hash provided');
+      return false;
+    }
+
+    console.log('🛑 Canceling RAG query for hash:', questionHash);
+    
+    // Abort the active request if it exists
+    if (activeRAGRequests[questionHash]) {
+      const { controller, timeoutId } = activeRAGRequests[questionHash];
+      
+      // Abort the fetch request
+      controller.abort();
+      console.log('✅ Aborted active RAG request');
+      
+      // Clear the timeout
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+      
+      // Remove from active requests
+      delete activeRAGRequests[questionHash];
+      
+      // Remove from processed questions so it can be re-queried if needed
+      processedQuestions.delete(questionHash);
+      
+      // Update question state
+      const questionEntry = detectedQuestions.find(q => q.hash === questionHash);
+      if (questionEntry) {
+        questionEntry.ragTriggered = false;
+        questionEntry.answerReceived = false;
+        questionEntry.noAnswerFound = false;
+        questionEntry.error = null;
+        questionEntry.answer = '';
+        questionEntry.sources = [];
+        console.log('✅ Reset question state for:', questionEntry.text);
+      }
+      
+      // Broadcast updated questions
+      chrome.runtime.sendMessage({
+        type: 'QUESTIONS_DETECTED',
+        data: {
+          questions: [],
+          allQuestions: detectedQuestions.map(q => ({
+            text: q.text,
+            hash: q.hash,
+            timestamp: q.timestamp,
+            answer: q.answer,
+            sources: q.sources || [],
+            noAnswerFound: !!q.noAnswerFound,
+            error: q.error || null,
+            answerReceived: !!q.answerReceived,
+            autoDetected: !!q.autoDetected,
+            ragTriggered: !!q.ragTriggered
+          }))
+        }
+      }).catch(() => {});
+    } else {
+      console.log('ℹ️ No active request found for hash:', questionHash);
+    }
+    
+    return false;
+  }
+
   if (message.type === 'QUERY_RAG_QUESTION') {
     const rawQuestion = (message.question || '').trim();
     if (!rawQuestion) {
@@ -325,6 +432,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     const questionHash = message.newHash || hashQuestion(normalizedQuestion);
     const originalHash = message.originalHash;
     
+    // Cancel any pending auto-send timer for this question
+    if (autoSendTimers[questionHash]) {
+      console.log('🛑 Canceling auto-send timer for manually triggered question:', normalizedQuestion);
+      clearTimeout(autoSendTimers[questionHash]);
+      delete autoSendTimers[questionHash];
+    }
+    
+    // Cancel any active request for this question before starting a new one
+    if (activeRAGRequests[questionHash]) {
+      const { controller, timeoutId } = activeRAGRequests[questionHash];
+      controller.abort();
+      if (timeoutId) clearTimeout(timeoutId);
+      delete activeRAGRequests[questionHash];
+      console.log('🔄 Canceled previous request before starting new one');
+    }
+    
     // If editing an existing question (different hash), remove the old one
     if (originalHash && originalHash !== questionHash) {
       const oldIndex = detectedQuestions.findIndex(q => q.hash === originalHash);
@@ -332,6 +455,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         detectedQuestions.splice(oldIndex, 1);
         processedQuestions.delete(originalHash);
         delete ragAnswers[originalHash];
+        
+        // Cancel auto-send timer for old question hash too
+        if (autoSendTimers[originalHash]) {
+          clearTimeout(autoSendTimers[originalHash]);
+          delete autoSendTimers[originalHash];
+        }
+        
         console.log(`🔄 Removed old question (${originalHash}) and replaced with edited version (${questionHash})`);
       }
     }
@@ -351,7 +481,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         sources: [],
         noAnswerFound: false,
         error: null,
-        answerReceived: false
+        answerReceived: false,
+        autoDetected: false // Manually triggered via UI
       });
 
       chrome.runtime.sendMessage({
@@ -366,7 +497,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sources: q.sources || [],
             noAnswerFound: !!q.noAnswerFound,
             error: q.error || null,
-            answerReceived: !!q.answerReceived
+            answerReceived: !!q.answerReceived,
+            autoDetected: !!q.autoDetected,
+            ragTriggered: !!q.ragTriggered
           }))
         }
       }).catch(() => {});
@@ -414,8 +547,23 @@ async function handleInitRecording(tabId) {
   detectedIntents = [];
   detectedQuestions = [];
   pendingQuestionPrefix = '';
+  pendingCandidates = {}; // Clear pending question candidates
   processedQuestions = new Set();
   ragAnswers = {};
+  
+  // Clear all pending auto-send timers
+  Object.values(autoSendTimers).forEach(timerId => clearTimeout(timerId));
+  autoSendTimers = {};
+  console.log('🧹 Cleared all pending auto-send timers');
+  
+  // Cancel and clear all active RAG requests
+  Object.values(activeRAGRequests).forEach(({ controller, timeoutId }) => {
+    controller.abort();
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+  activeRAGRequests = {};
+  console.log('🛑 Canceled and cleared all active RAG requests');
+  
   isRecording = true;
   recordingStartTime = Date.now();
   recordingTabId = tabId;
@@ -1855,6 +2003,7 @@ function extractQuestionsFromText(text) {
   }
 
   const cleaned = text.replace(/\s+/g, ' ').trim();
+  console.log('🔎 Extracting questions from transcript:', cleaned.substring(0, 100) + (cleaned.length > 100 ? '...' : ''));
 
   // Explicit question mark detection
   const markedQuestions = [...cleaned.matchAll(/[^.?!\n]*\?/g)]
@@ -1913,13 +2062,20 @@ function addCandidateToPending(candidateText) {
   const hash = hashCandidate(normalized);
   const confidence = scoreQuestionConfidence(normalized);
   
+  console.log('🔍 Processing candidate question:', {
+    text: normalized,
+    confidence: confidence.toFixed(2),
+    willAutoConfirm: confidence >= CONFIDENCE_THRESHOLD,
+    needsAIValidation: confidence >= AI_VALIDATION_THRESHOLD && confidence < CONFIDENCE_THRESHOLD
+  });
+  
   const now = Date.now();
   if (pendingCandidates[hash]) {
     // Update existing candidate: extend if it's being re-confirmed
     pendingCandidates[hash].lastUpdatedAt = now;
     pendingCandidates[hash].extendCount = (pendingCandidates[hash].extendCount || 0) + 1;
     pendingCandidates[hash].confidence = Math.max(pendingCandidates[hash].confidence, confidence);
-    console.log('📝 Extended pending candidate:', normalized, 'score:', pendingCandidates[hash].confidence);
+    console.log('📝 Extended pending candidate:', normalized, 'score:', pendingCandidates[hash].confidence.toFixed(2));
   } else {
     // New candidate
     pendingCandidates[hash] = {
@@ -1929,22 +2085,26 @@ function addCandidateToPending(candidateText) {
       confidence: confidence,
       extendCount: 0
     };
-    console.log('🔔 Added pending candidate:', normalized, 'confidence:', confidence);
+    console.log('🔔 Added NEW pending candidate:', normalized, 'confidence:', confidence.toFixed(2), 'threshold:', CONFIDENCE_THRESHOLD);
   }
 }
 
 // Query the RAG API for a question
 async function queryRAGAPI(question) {
+  console.log('🔍 queryRAGAPI called with question:', question);
+  
   if (!ragBaseUrl || ragBaseUrl.length === 0) {
     console.log('⚠️ RAG API URL not configured, skipping document search');
     return null;
   }
 
   if (!question || question.trim().length === 0) {
+    console.log('⚠️ Empty question provided to queryRAGAPI');
     return null;
   }
 
   const questionHash = hashQuestion(question);
+  console.log('📌 Question hash:', questionHash);
 
   // Check if we've already queried this question (allow retries by removing from cache)
   if (processedQuestions.has(questionHash)) {
@@ -1968,10 +2128,17 @@ async function queryRAGAPI(question) {
   processedQuestions.add(questionHash);
 
   try {
-    console.log('🤖 Querying OpenAI API for question:', question);
+    console.log('🤖 Querying RAG API for question:', question);
 
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), RAG_QUERY_TIMEOUT_MS);
+    const timeoutId = setTimeout(() => {
+      console.log('⏱️ RAG query timeout for:', question);
+      controller.abort();
+    }, RAG_QUERY_TIMEOUT_MS);
+    
+    // Store the controller so we can cancel it later
+    activeRAGRequests[questionHash] = { controller, timeoutId };
+    console.log('📝 Stored abort controller for hash:', questionHash);
 
     const response = await fetch(`${ragBaseUrl}/rag/query`, {
       method: 'POST',
@@ -1986,7 +2153,11 @@ async function queryRAGAPI(question) {
       }),
       signal: controller.signal
     });
+    
+    // Clear timeout and remove from active requests on success
     clearTimeout(timeoutId);
+    delete activeRAGRequests[questionHash];
+    console.log('✅ Request completed, removed from active requests');
 
     if (!response.ok) {
       console.error('❌ RAG API error:', response.status, response.statusText);
@@ -2090,6 +2261,19 @@ async function queryRAGAPI(question) {
     return ragResponse;
 
   } catch (err) {
+    // Clean up active request tracking
+    if (activeRAGRequests[questionHash]) {
+      clearTimeout(activeRAGRequests[questionHash].timeoutId);
+      delete activeRAGRequests[questionHash];
+    }
+    
+    // Check if it was a user cancellation
+    if (err.name === 'AbortError') {
+      console.log('🛑 RAG query was canceled by user or timeout:', question);
+      // Don't update the question state here - it's already handled in CANCEL_RAG_QUERY
+      return null;
+    }
+    
     console.error('❌ RAG API query failed:', err.message);
 
     const failureResponse = {
